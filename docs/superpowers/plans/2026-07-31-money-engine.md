@@ -17,7 +17,7 @@
 - Kid auth: custom token, UID `kid_{kidId}`, claims `{ familyId, kidId, role: 'kid' }`.
 - Family `currency` immutable after creation; `deductionRules` writable only via callable.
 - Kids may edit invoices only in statuses `draft | returned | countered`; only `draft` deletable; no client transition into `approved`.
-- Events live in an `events` subcollection under each invoice, create-only; `actorUid == request.auth.uid`, `at == request.time`; every `→ sent` event includes `requestedAmount`.
+- Events live in an `events` subcollection under each invoice, create-only, with deterministic IDs `e{N}` tied to the invoice's `eventCount` (starts 0, +1 per transition, transition and event created in one batch); `actorUid == request.auth.uid`, `at == request.time`; every `→ sent` event includes `requestedAmount`.
 - Node 20, TypeScript `strict: true` everywhere. Run all emulator tests via `firebase emulators:exec`.
 - Commit after every task (steps say when).
 
@@ -142,7 +142,7 @@ git commit -m "chore: scaffold npm-workspaces monorepo with shared package"
   - `interface DeductionRule { nameEs: string; nameEn: string; basisPoints: number; destination: Destination }`
   - `interface DeductionLine extends DeductionRule { amount: number }`
   - `interface DeductionBreakdown { gross: number; lines: DeductionLine[]; netAmount: number; savingsTotal: number; withheldTotal: number }`
-  - `validateDeductionRules(rules: DeductionRule[]): void` — throws `Error` on non-integer/negative basisPoints or sum > 10000
+  - `validateDeductionRules(rules: unknown): asserts rules is DeductionRule[]` — full runtime validation for untrusted callable input: must be an array of ≤ 20 objects, names 1–60 char strings, destination strictly `'savings' | 'withheld'`, basisPoints non-negative integers summing ≤ 10000; throws `Error` otherwise
   - `computeDeductions(gross: number, rules: DeductionRule[]): DeductionBreakdown` — throws on non-positive-integer gross
 
 - [ ] **Step 1: Write the failing tests**
@@ -170,6 +170,15 @@ describe('validateDeductionRules', () => {
   });
   it('accepts a sum of exactly 100%', () => {
     expect(() => validateDeductionRules([{ ...savings20, basisPoints: 10000 }])).not.toThrow();
+  });
+  it('rejects untrusted shapes at runtime (callable boundary)', () => {
+    expect(() => validateDeductionRules('nope' as never)).toThrow(/array/);
+    expect(() => validateDeductionRules([null as never])).toThrow(/object/);
+    expect(() => validateDeductionRules([{ ...tax10, destination: 'pocket' as never }])).toThrow(/destination/);
+    expect(() => validateDeductionRules([{ ...tax10, nameEs: '' }])).toThrow(/name/);
+    expect(() => validateDeductionRules([{ ...tax10, nameEn: 'x'.repeat(61) }])).toThrow(/name/);
+    expect(() => validateDeductionRules([{ ...tax10, basisPoints: '10' as never }])).toThrow(/non-negative integer/);
+    expect(() => validateDeductionRules(new Array(21).fill(tax10))).toThrow(/too many/i);
   });
 });
 
@@ -245,13 +254,28 @@ export interface DeductionBreakdown {
   withheldTotal: number;
 }
 
-export function validateDeductionRules(rules: DeductionRule[]): void {
+const MAX_RULES = 20;
+const MAX_NAME_LENGTH = 60;
+
+export function validateDeductionRules(rules: unknown): asserts rules is DeductionRule[] {
+  if (!Array.isArray(rules)) throw new Error('deduction rules must be an array');
+  if (rules.length > MAX_RULES) throw new Error(`too many deduction rules (max ${MAX_RULES})`);
   let sum = 0;
   for (const r of rules) {
-    if (!Number.isInteger(r.basisPoints) || r.basisPoints < 0) {
+    if (typeof r !== 'object' || r === null) throw new Error('each rule must be an object');
+    const { nameEs, nameEn, basisPoints, destination } = r as Record<string, unknown>;
+    for (const name of [nameEs, nameEn]) {
+      if (typeof name !== 'string' || name.length === 0 || name.length > MAX_NAME_LENGTH) {
+        throw new Error(`rule names must be 1-${MAX_NAME_LENGTH} character strings`);
+      }
+    }
+    if (destination !== 'savings' && destination !== 'withheld') {
+      throw new Error("destination must be 'savings' or 'withheld'");
+    }
+    if (typeof basisPoints !== 'number' || !Number.isInteger(basisPoints) || basisPoints < 0) {
       throw new Error('basisPoints must be a non-negative integer');
     }
-    sum += r.basisPoints;
+    sum += basisPoints;
   }
   if (sum > 10000) throw new Error('deduction rules exceed 100%');
 }
@@ -408,7 +432,7 @@ git commit -m "feat(shared): invoice status transition matrix"
 
 - [ ] **Step 1: Install Firebase tooling**
 
-Run: `npm install -D firebase-tools -w money-kids && npm install -D @firebase/rules-unit-testing firebase vitest typescript -w packages/rules-tests` (create `packages/rules-tests/package.json` first, below).
+Create `packages/rules-tests/package.json` (below), then run `npm install -D firebase-tools` at the repo root (root devDependency, no `-w` flag) followed by `npm install` to wire the new workspace.
 
 `packages/rules-tests/package.json`:
 ```json
@@ -761,8 +785,8 @@ git commit -m "feat(rules): family isolation, immutable currency, protected bala
 - Consumes: rule helpers from Task 5.
 - Produces: document shapes used by functions in Tasks 9–12:
   - `activities/{activityId}`: `{ titleEs, titleEn, descriptionEs, descriptionEn, suggestedPrice, category, repeatable, active }`
-  - `invoices/{invoiceId}`: `{ kidId, activityId?, description, photoPaths, status, requestedAmount, counterOffer?, approvedAmount?, deductions?, netAmount? }`
-  - `invoices/{invoiceId}/events/{eventId}`: `{ from, to, actorUid, at, note?, requestedAmount?, kidId }`
+  - `invoices/{invoiceId}`: `{ kidId, activityId?, description, photoPaths, status, requestedAmount, eventCount, counterOffer?, approvedAmount?, deductions?, netAmount? }` — `eventCount` starts at 0 on draft creation and increments by exactly 1 on every status transition
+  - `invoices/{invoiceId}/events/{eventId}`: `{ from, to, actorUid, at, note?, requestedAmount?, kidId }` — doc IDs are deterministic: event N is `e{N}` (`e1`, `e2`, …). Every transition batch must create `e{newEventCount}` or the invoice update is rejected (`existsAfter` check), and events validate `from` against the pre-batch invoice status — fabricated standalone events and event-less transitions are both structurally impossible.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -782,7 +806,7 @@ afterAll(async () => { await env.cleanup(); });
 
 const draft = {
   kidId: 'k1', activityId: null, description: 'Leí un libro', photoPaths: [],
-  status: 'draft', requestedAmount: 5000,
+  status: 'draft', requestedAmount: 5000, eventCount: 0,
 };
 
 beforeEach(async () => {
@@ -802,10 +826,11 @@ beforeEach(async () => {
 
 import type { RulesTestContext } from '@firebase/rules-unit-testing';
 
-function sendBatch(db: ReturnType<RulesTestContext['firestore']>, invoiceId: string, from: string, amount: number) {
+// eventCount = the invoice's NEW event count after this transition (previous + 1)
+function sendBatch(db: ReturnType<RulesTestContext['firestore']>, invoiceId: string, from: string, amount: number, eventCount: number) {
   const batch = writeBatch(db);
-  batch.update(doc(db, `families/fam1/invoices/${invoiceId}`), { status: 'sent', requestedAmount: amount });
-  batch.set(doc(collection(db, `families/fam1/invoices/${invoiceId}/events`)), {
+  batch.update(doc(db, `families/fam1/invoices/${invoiceId}`), { status: 'sent', requestedAmount: amount, eventCount });
+  batch.set(doc(db, `families/fam1/invoices/${invoiceId}/events/e${eventCount}`), {
     from, to: 'sent', actorUid: 'kid_k1', at: serverTimestamp(), requestedAmount: amount, kidId: 'k1',
   });
   return batch.commit();
@@ -832,43 +857,63 @@ describe('invoice lifecycle', () => {
     await assertFails(setDoc(doc(parentCtx(env, 'p1').firestore(), 'families/fam1/invoices/inv3'), draft));
   });
 
-  it('kid sends draft with a matching event; send without event fails', async () => {
+  it('create is field-whitelisted: no money fields, no nonzero eventCount', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, netAmount: 5000 }));
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, approvedAmount: 5000 }));
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, deductions: [] }));
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, eventCount: 3 }));
+  });
+
+  it('kid sends draft with a matching event; send without an event fails', async () => {
     const kdb = kidCtx(env, 'fam1', 'k1').firestore();
     await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
-    await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { status: 'sent' }));
-    await assertSucceeds(sendBatch(kdb, 'inv1', 'draft', 5000));
+    await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { status: 'sent', eventCount: 1 }));
+    await assertSucceeds(sendBatch(kdb, 'inv1', 'draft', 5000, 1));
+  });
+
+  it('fabricated standalone events are rejected', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
+    await sendBatch(kdb, 'inv1', 'draft', 5000, 1);
+    // event alone, no invoice transition in the batch: from == to, wrong id → denied
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1/events/e2'), {
+      from: 'sent', to: 'approved', actorUid: 'kid_k1', at: serverTimestamp(), kidId: 'k1',
+    }));
   });
 
   it('kid cannot edit a sent invoice; parent returns it; kid edits and resends', async () => {
     const kdb = kidCtx(env, 'fam1', 'k1').firestore();
     await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
-    await sendBatch(kdb, 'inv1', 'draft', 5000);
+    await sendBatch(kdb, 'inv1', 'draft', 5000, 1);
     await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { description: 'edited' }));
 
     const pdb = parentCtx(env, 'p1').firestore();
     const ret = writeBatch(pdb);
-    ret.update(doc(pdb, 'families/fam1/invoices/inv1'), { status: 'returned' });
-    ret.set(doc(collection(pdb, 'families/fam1/invoices/inv1/events')), {
+    ret.update(doc(pdb, 'families/fam1/invoices/inv1'), { status: 'returned', eventCount: 2 });
+    ret.set(doc(pdb, 'families/fam1/invoices/inv1/events/e2'), {
       from: 'sent', to: 'returned', actorUid: 'p1', at: serverTimestamp(), note: 'Cuéntame más', kidId: 'k1',
     });
     await assertSucceeds(ret.commit());
 
     await assertSucceeds(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { description: 'Aprendí sobre dinosaurios' }));
-    await assertSucceeds(sendBatch(kdb, 'inv1', 'returned', 6000));
+    // matrix: activityId is only editable in draft
+    await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { activityId: 'act1' }));
+    await assertSucceeds(sendBatch(kdb, 'inv1', 'returned', 6000, 3));
   });
 
-  it('parent counters with server timestamp and own uid; kid cannot counter', async () => {
+  it('parent counters with server timestamp and own uid', async () => {
     const kdb = kidCtx(env, 'fam1', 'k1').firestore();
     await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
-    await sendBatch(kdb, 'inv1', 'draft', 5000);
+    await sendBatch(kdb, 'inv1', 'draft', 5000, 1);
 
     const pdb = parentCtx(env, 'p1').firestore();
     const counter = writeBatch(pdb);
     counter.update(doc(pdb, 'families/fam1/invoices/inv1'), {
-      status: 'countered',
+      status: 'countered', eventCount: 2,
       counterOffer: { amount: 3000, note: 'Un poco menos', parentId: 'p1', at: serverTimestamp() },
     });
-    counter.set(doc(collection(pdb, 'families/fam1/invoices/inv1/events')), {
+    counter.set(doc(pdb, 'families/fam1/invoices/inv1/events/e2'), {
       from: 'sent', to: 'countered', actorUid: 'p1', at: serverTimestamp(), kidId: 'k1',
     });
     await assertSucceeds(counter.commit());
@@ -877,11 +922,11 @@ describe('invoice lifecycle', () => {
   it('no client can set status approved or write money fields', async () => {
     const kdb = kidCtx(env, 'fam1', 'k1').firestore();
     await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
-    await sendBatch(kdb, 'inv1', 'draft', 5000);
+    await sendBatch(kdb, 'inv1', 'draft', 5000, 1);
     const pdb = parentCtx(env, 'p1').firestore();
-    await assertFails(updateDoc(doc(pdb, 'families/fam1/invoices/inv1'), { status: 'approved' }));
+    await assertFails(updateDoc(doc(pdb, 'families/fam1/invoices/inv1'), { status: 'approved', eventCount: 2 }));
     await assertFails(updateDoc(doc(pdb, 'families/fam1/invoices/inv1'), { netAmount: 5000 }));
-    await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { status: 'approved' }));
+    await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { status: 'approved', eventCount: 2 }));
   });
 
   it('only drafts are deletable, only by the owning kid', async () => {
@@ -889,7 +934,7 @@ describe('invoice lifecycle', () => {
     await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
     await assertSucceeds(deleteDoc(doc(kdb, 'families/fam1/invoices/inv1')));
     await setDoc(doc(kdb, 'families/fam1/invoices/inv2'), draft);
-    await sendBatch(kdb, 'inv2', 'draft', 5000);
+    await sendBatch(kdb, 'inv2', 'draft', 5000, 1);
     await assertFails(deleteDoc(doc(kdb, 'families/fam1/invoices/inv2')));
     await assertFails(deleteDoc(doc(parentCtx(env, 'p1').firestore(), 'families/fam1/invoices/inv2')));
   });
@@ -897,7 +942,7 @@ describe('invoice lifecycle', () => {
   it('events are immutable once created', async () => {
     const kdb = kidCtx(env, 'fam1', 'k1').firestore();
     await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
-    await sendBatch(kdb, 'inv1', 'draft', 5000);
+    await sendBatch(kdb, 'inv1', 'draft', 5000, 1);
     const events = await getDocs(query(collection(kdb, 'families/fam1/invoices/inv1/events'), where('kidId', '==', 'k1')));
     const evRef = events.docs[0]!.ref;
     await assertFails(updateDoc(evRef, { requestedAmount: 999999 }));
@@ -935,68 +980,80 @@ Add inside `match /families/{familyId} { ... }` (after the `kids` block):
         function inv() { return resource.data; }
         function newInv() { return request.resource.data; }
         function isOwnerKid() { return isFamilyKid() && inv().kidId == authKidId(); }
-        function moneyFieldsUntouched() {
-          return !newInv().diff(inv()).affectedKeys()
-            .hasAny(['kidId', 'approvedAmount', 'deductions', 'netAmount']);
-        }
-        function hasSentEvent() {
-          // the same batch must create exactly this transition's event; the
-          // event rules below validate its contents against getAfter(invoice)
-          return newInv().status != inv().status;
+        function transitionHasEvent() {
+          // every transition increments eventCount and the same batch must
+          // create the deterministic event doc e{newEventCount}
+          return newInv().eventCount == inv().eventCount + 1
+            && existsAfter(/databases/$(database)/documents/families/$(familyId)/invoices/$(invoiceId)/events/$('e' + string(newInv().eventCount)));
         }
 
         allow get: if isFamilyParent() || (isFamilyKid() && inv().kidId == authKidId());
         allow list: if isFamilyParent() || (isFamilyKid() && resource.data.kidId == authKidId());
 
         allow create: if isFamilyKid()
+          && newInv().keys().hasOnly(['kidId', 'activityId', 'description', 'photoPaths', 'status', 'requestedAmount', 'eventCount'])
           && newInv().kidId == authKidId()
           && newInv().status == 'draft'
+          && newInv().eventCount == 0
           && newInv().requestedAmount is int && newInv().requestedAmount > 0;
 
-        // kid edits in place (no transition) in kid-editable statuses
+        // kid edits in place (no transition); activityId editable only in draft
         allow update: if isOwnerKid()
           && inv().status in ['draft', 'returned', 'countered']
           && newInv().status == inv().status
-          && moneyFieldsUntouched()
-          && !newInv().diff(inv()).affectedKeys().hasAny(['counterOffer'])
-          && (newInv().requestedAmount is int && newInv().requestedAmount > 0);
+          && newInv().diff(inv()).affectedKeys().hasOnly(
+               inv().status == 'draft'
+                 ? ['description', 'photoPaths', 'requestedAmount', 'activityId']
+                 : ['description', 'photoPaths', 'requestedAmount'])
+          && newInv().requestedAmount is int && newInv().requestedAmount > 0;
 
-        // kid transition to sent
+        // kid transition to sent (event required)
         allow update: if isOwnerKid()
           && inv().status in ['draft', 'returned', 'countered']
           && newInv().status == 'sent'
-          && moneyFieldsUntouched()
-          && !newInv().diff(inv()).affectedKeys().hasAny(['counterOffer'])
-          && newInv().requestedAmount is int && newInv().requestedAmount > 0;
+          && newInv().diff(inv()).affectedKeys().hasOnly(
+               inv().status == 'draft'
+                 ? ['status', 'eventCount', 'description', 'photoPaths', 'requestedAmount', 'activityId']
+                 : ['status', 'eventCount', 'description', 'photoPaths', 'requestedAmount'])
+          && newInv().requestedAmount is int && newInv().requestedAmount > 0
+          && transitionHasEvent();
 
-        // parent returns
+        // parent returns (event required)
         allow update: if isFamilyParent()
           && inv().status == 'sent'
           && newInv().status == 'returned'
-          && newInv().diff(inv()).affectedKeys().hasOnly(['status']);
+          && newInv().diff(inv()).affectedKeys().hasOnly(['status', 'eventCount'])
+          && transitionHasEvent();
 
-        // parent counters
+        // parent counters (event required)
         allow update: if isFamilyParent()
           && inv().status == 'sent'
           && newInv().status == 'countered'
-          && newInv().diff(inv()).affectedKeys().hasOnly(['status', 'counterOffer'])
+          && newInv().diff(inv()).affectedKeys().hasOnly(['status', 'eventCount', 'counterOffer'])
           && newInv().counterOffer.amount is int && newInv().counterOffer.amount > 0
           && newInv().counterOffer.parentId == request.auth.uid
-          && newInv().counterOffer.at == request.time;
+          && newInv().counterOffer.at == request.time
+          && transitionHasEvent();
 
         allow delete: if isOwnerKid() && inv().status == 'draft';
 
         match /events/{eventId} {
+          function invBefore() {
+            return get(/databases/$(database)/documents/families/$(familyId)/invoices/$(invoiceId)).data;
+          }
           function invAfter() {
             return getAfter(/databases/$(database)/documents/families/$(familyId)/invoices/$(invoiceId)).data;
           }
           allow read: if isFamilyParent()
             || (isFamilyKid() && resource.data.kidId == authKidId());
           allow create: if (isFamilyParent() || isFamilyKid())
+            && eventId == 'e' + string(invAfter().eventCount)
             && request.resource.data.actorUid == request.auth.uid
             && request.resource.data.at == request.time
             && request.resource.data.kidId == invAfter().kidId
+            && request.resource.data.from == invBefore().status
             && request.resource.data.to == invAfter().status
+            && request.resource.data.from != request.resource.data.to
             && (request.resource.data.to != 'sent'
                 || request.resource.data.requestedAmount == invAfter().requestedAmount);
           allow update, delete: if false;
@@ -1004,7 +1061,7 @@ Add inside `match /families/{familyId} { ... }` (after the `kids` block):
       }
 ```
 
-**Known, accepted gap** (documented in spec review): rules validate every event *against* the invoice, but cannot force a transition batch to *include* an event (Firestore rules can't reference a subcollection doc with unknown ID from the parent's rule). The client always batches transition + event; approval events are server-written. The test "send without event fails" is satisfied because the batched event's `to == invAfter().status` check makes the *event-less* update pass rules but our client contract requires the batch — **so implement the test expectation as written**: if it proves impossible to make the bare update fail at rules level, change that assertion to `assertSucceeds` with a comment, and enforce the event in the Cloud Functions + client layers instead. Flag this in the task's completion report.
+**Implementation note:** the deterministic event ID (`e{eventCount}`) is what lets the invoice rule reference the event doc via `existsAfter` — this closes both gaps: an event-less transition fails (`existsAfter` misses) and a fabricated standalone event fails (`from == invBefore().status` equals `to == invAfter().status` when the invoice didn't change, and `from != to` is required; the deterministic ID also collides with the already-existing previous event). If the emulator rejects the computed path segment syntax `$('e' + string(...))`, the fallback is a required string field `lastEventId` on the invoice set to `'e' + eventCount`, validated on both sides — do not fall back to dropping event enforcement. Flag whichever variant shipped in the completion report.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1350,6 +1407,10 @@ describe('createJoinCodeCore', () => {
     await expect(createJoinCodeCore(db, kidAuth, { familyId: 'fam1', kidId: 'k1' })).rejects.toThrow();
     await expect(createJoinCodeCore(db, parentAuth, { familyId: 'fam1', kidId: 'ghost' })).rejects.toThrow(/not found/i);
   });
+  it('rejects members whose role is not parent', async () => {
+    await db.doc('families/fam1/members/aunt').set({ role: 'viewer', displayName: 'Tía' });
+    await expect(createJoinCodeCore(db, { uid: 'aunt', token: {} } as never, { familyId: 'fam1', kidId: 'k1' })).rejects.toThrow(/parent role/i);
+  });
 });
 
 describe('mintKidTokenCore', () => {
@@ -1410,6 +1471,8 @@ export async function assertParentCaller(
   if (auth.token.role === 'kid') throw new HttpsError('permission-denied', 'parent role required');
   const member = await db.doc(`families/${familyId}/members/${auth.uid}`).get();
   if (!member.exists) throw new HttpsError('permission-denied', 'not a member of this family');
+  // callable functions bypass Firestore rules — role must be checked here too
+  if (member.get('role') !== 'parent') throw new HttpsError('permission-denied', 'parent role required');
 }
 
 export function assertKidCaller(familyId: string, auth: CallerAuth | undefined): string {
@@ -1570,7 +1633,7 @@ async function seedInvoice(deductionsEnabled: boolean, invoice: Record<string, u
   await db.doc('families/fam1/kids/k1').set({ name: 'Mia', birthYear: 2016, deductionsEnabled, spendableBalance: 0, savingsBalance: 0 });
   await db.doc('families/fam1/invoices/inv1').set({
     kidId: 'k1', activityId: null, description: 'Leí un libro', photoPaths: [],
-    status: 'sent', requestedAmount: 10000, ...invoice,
+    status: 'sent', requestedAmount: 10000, eventCount: 1, ...invoice,
   });
 }
 
@@ -1632,7 +1695,7 @@ describe('approveInvoiceCore', () => {
     await approveInvoiceCore(db, parentAuth, { familyId: 'fam1', invoiceId: 'inv1' });
     await db.doc('families/fam1/invoices/inv2').set({
       kidId: 'k1', activityId: 'act1', description: 'otra vez', photoPaths: [],
-      status: 'sent', requestedAmount: 3000,
+      status: 'sent', requestedAmount: 3000, eventCount: 1,
     });
     await expect(approveInvoiceCore(db, parentAuth, { familyId: 'fam1', invoiceId: 'inv2' }))
       .rejects.toThrow(/one-time/i);
@@ -1694,13 +1757,15 @@ export async function approveInTransaction(
       : [];
     const breakdown = computeDeductions(opts.gross, rules);
 
+    const nextEventCount = (data.eventCount ?? 0) + 1;
     tx.update(invRef, {
       status: 'approved',
       approvedAmount: breakdown.gross,
       deductions: breakdown.lines,
       netAmount: breakdown.netAmount,
+      eventCount: nextEventCount,
     });
-    tx.create(invRef.collection('events').doc(), {
+    tx.create(invRef.collection('events').doc(`e${nextEventCount}`), {
       from: opts.expectedStatus, to: 'approved', actorUid: opts.actorUid,
       at: FieldValue.serverTimestamp(), kidId: data.kidId,
     });
@@ -1818,7 +1883,7 @@ beforeEach(async () => {
   await db.doc('families/fam1/kids/k1').set({ name: 'Mia', birthYear: 2016, deductionsEnabled: false, spendableBalance: 0, savingsBalance: 0 });
   await db.doc('families/fam1/invoices/inv1').set({
     kidId: 'k1', activityId: null, description: 'idea', photoPaths: [],
-    status: 'countered', requestedAmount: 8000,
+    status: 'countered', requestedAmount: 8000, eventCount: 2,
     counterOffer: { amount: 5000, note: 'menos', parentId: 'p1', at: Timestamp.now() },
   });
 });
@@ -1906,7 +1971,7 @@ git commit -m "feat(functions): kid-callable counter-offer acceptance at parent'
 **Interfaces:**
 - Consumes: `assertParentCaller` (Task 9), `validateDeductionRules` (Task 2).
 - Produces:
-  - `recordPayoutCore(db, auth, { familyId, kidId, balance: 'spendable' | 'savings', amount, note, requestId })` — parent-only; ledger doc `payout_{requestId}` (create-only, idempotent); enforces `0 < amount <= that balance`
+  - `recordPayoutCore(db, auth, { familyId, kidId, balance: 'spendable' | 'savings', amount, note, requestId })` — parent-only; ledger doc `payout_{requestId}`; enforces `0 < amount <= that balance`. **Truly idempotent:** retrying an already-recorded `requestId` with an identical payload (kidId, balance, amount) succeeds as a no-op — a client that lost the response can safely retry; the same `requestId` with a different payload throws `already-exists`
   - `setDeductionRulesCore(db, auth, { familyId, rules })` — parent-only; validates then writes `deductionRules` on the family (admin write bypasses the client immutability rule by design)
   - Callables: `recordPayout`, `setDeductionRules`
 
@@ -1944,8 +2009,11 @@ describe('recordPayoutCore', () => {
     expect(entry.get('type')).toBe('payout');
     expect(entry.get('balance')).toBe('spendable');
     expect(entry.get('amount')).toBe(3000);
-    // repeat with same requestId: no double debit
-    await expect(recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 3000, note: 'efectivo', requestId: 'r1' })).rejects.toThrow();
+    // retry with same requestId + identical payload: idempotent success, no double debit
+    await recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 3000, note: 'efectivo', requestId: 'r1' });
+    expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(4000);
+    // same requestId with a different payload: rejected, still no double debit
+    await expect(recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 100, note: 'efectivo', requestId: 'r1' })).rejects.toThrow(/mismatch/i);
     expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(4000);
   });
   it('savings payouts debit savings', async () => {
@@ -2032,6 +2100,15 @@ export async function recordPayoutCore(
     throw new HttpsError('invalid-argument', 'balance must be spendable or savings');
   }
   await db.runTransaction(async (tx) => {
+    const payoutRef = db.doc(`families/${data.familyId}/ledger/payout_${data.requestId}`);
+    const existing = await tx.get(payoutRef);
+    if (existing.exists) {
+      const identical = existing.get('kidId') === data.kidId
+        && existing.get('balance') === data.balance
+        && existing.get('amount') === data.amount;
+      if (identical) return; // idempotent retry: already recorded, no double debit
+      throw new HttpsError('already-exists', 'requestId reused with mismatched payload');
+    }
     const kidRef = db.doc(`families/${data.familyId}/kids/${data.kidId}`);
     const kid = await tx.get(kidRef);
     if (!kid.exists) throw new HttpsError('not-found', 'kid not found');
@@ -2040,7 +2117,7 @@ export async function recordPayoutCore(
     if (data.amount > current) {
       throw new HttpsError('failed-precondition', `payout exceeds ${data.balance} balance`);
     }
-    tx.create(db.doc(`families/${data.familyId}/ledger/payout_${data.requestId}`), {
+    tx.create(payoutRef, {
       kidId: data.kidId, type: 'payout', balance: data.balance, amount: data.amount,
       note: data.note, createdBy: auth!.uid, at: FieldValue.serverTimestamp(),
     });
