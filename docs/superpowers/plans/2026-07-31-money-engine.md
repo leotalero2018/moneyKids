@@ -14,7 +14,7 @@
 - All money amounts are **integers in minor units**; deduction rules use integer `basisPoints`, each `>= 0`, sum `<= 10000`.
 - Invoice statuses: `draft | sent | approved | countered | returned`. Ledger types: `credit | savings-credit | payout`; every ledger entry has `balance: 'spendable' | 'savings'`; amounts always positive.
 - Deterministic ledger IDs, create-only: `credit_{invoiceId}`, `savings_{invoiceId}`, `payout_{requestId}`.
-- Kid auth: custom token, UID `kid_{kidId}`, claims `{ familyId, kidId, role: 'kid' }`.
+- Kid auth: custom token, UID `kid_{familyId}_{kidId}` (family-namespaced — kid doc IDs are only unique within a family, and Auth UIDs are global), claims `{ familyId, kidId, role: 'kid' }`.
 - Family `currency` immutable after creation; `deductionRules` writable only via callable.
 - Kids may edit invoices only in statuses `draft | returned | countered`; only `draft` deletable; no client transition into `approved`.
 - Events live in an `events` subcollection under each invoice, create-only, with deterministic IDs `e{N}` tied to the invoice's `eventCount` (starts 0, +1 per transition, transition and event created in one batch); `actorUid == request.auth.uid`, `at == request.time`; every `→ sent` event includes `requestedAmount`.
@@ -428,7 +428,7 @@ git commit -m "feat(shared): invoice status transition matrix"
 **Interfaces:**
 - Produces:
   - `npm run test:rules` (root) — runs rules tests inside `firebase emulators:exec`
-  - `helpers.ts` exports: `setupTestEnv(): Promise<RulesTestEnvironment>` (project `money-kids-test`, loads `firestore.rules`), `parentCtx(env, uid)` (authenticated parent context), `kidCtx(env, familyId, kidId)` (authenticated kid context with `{ role: 'kid', familyId, kidId }` claims and uid `kid_{kidId}`), `seed(env, fn)` (wrapper around `withSecurityRulesDisabled`).
+  - `helpers.ts` exports: `setupTestEnv(): Promise<RulesTestEnvironment>` (project `money-kids-test`, loads `firestore.rules`), `parentCtx(env, uid)` (authenticated parent context), `kidCtx(env, familyId, kidId)` (authenticated kid context with `{ role: 'kid', familyId, kidId }` claims and uid `kid_{familyId}_{kidId}`), `seed(env, fn)` (wrapper around `withSecurityRulesDisabled`).
 
 - [ ] **Step 1: Install Firebase tooling**
 
@@ -541,7 +541,7 @@ export function parentCtx(env: RulesTestEnvironment, uid: string): RulesTestCont
 }
 
 export function kidCtx(env: RulesTestEnvironment, familyId: string, kidId: string): RulesTestContext {
-  return env.authenticatedContext(`kid_${kidId}`, { role: 'kid', familyId, kidId });
+  return env.authenticatedContext(`kid_${familyId}_${kidId}`, { role: 'kid', familyId, kidId });
 }
 
 export async function seed(
@@ -653,7 +653,7 @@ describe('family creation and immutability', () => {
   it('kid tokens cannot create families', async () => {
     const db = kidCtx(env, 'fam1', 'k1').firestore();
     await assertFails(setDoc(doc(db, 'families/fam8'), {
-      name: 'X', language: 'en', currency: 'USD', createdBy: 'kid_k1', deductionRules: [],
+      name: 'X', language: 'en', currency: 'USD', createdBy: 'kid_fam1_k1', deductionRules: [],
     }));
   });
   it('currency is immutable, deductionRules not client-writable, name is editable', async () => {
@@ -831,7 +831,7 @@ function sendBatch(db: ReturnType<RulesTestContext['firestore']>, invoiceId: str
   const batch = writeBatch(db);
   batch.update(doc(db, `families/fam1/invoices/${invoiceId}`), { status: 'sent', requestedAmount: amount, eventCount });
   batch.set(doc(db, `families/fam1/invoices/${invoiceId}/events/e${eventCount}`), {
-    from, to: 'sent', actorUid: 'kid_k1', at: serverTimestamp(), requestedAmount: amount, kidId: 'k1',
+    from, to: 'sent', actorUid: 'kid_fam1_k1', at: serverTimestamp(), requestedAmount: amount, kidId: 'k1',
   });
   return batch.commit();
 }
@@ -878,7 +878,7 @@ describe('invoice lifecycle', () => {
     await sendBatch(kdb, 'inv1', 'draft', 5000, 1);
     // event alone, no invoice transition in the batch: from == to, wrong id → denied
     await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1/events/e2'), {
-      from: 'sent', to: 'approved', actorUid: 'kid_k1', at: serverTimestamp(), kidId: 'k1',
+      from: 'sent', to: 'approved', actorUid: 'kid_fam1_k1', at: serverTimestamp(), kidId: 'k1',
     }));
   });
 
@@ -1312,8 +1312,8 @@ git commit -m "feat(rules): storage photo isolation with sibling privacy and ima
   - `assertParentCaller(db, familyId, auth): Promise<void>` in `auth.ts` — throws `HttpsError('permission-denied')` unless caller is a non-kid member of the family (used by Tasks 10–12)
   - Core functions (unit-tested directly against emulator; thin `onCall` wrappers in `index.ts`):
     - `createJoinCodeCore(db, auth, { familyId, kidId }): Promise<{ code: string }>` — parent-only; writes `joinCodes/{code}` = `{ familyId, kidId, revoked: false, expiresAt: <now + 48h>, createdBy }`
-    - `mintKidTokenCore(db, adminAuth, { code }): Promise<{ token: string }>` — public; validates code not revoked/expired; returns custom token for uid `kid_{kidId}` with claims `{ familyId, kidId, role: 'kid' }`
-    - `revokeKidAccessCore(db, adminAuth, auth, { familyId, kidId }): Promise<void>` — parent-only; marks all of the kid's codes revoked and calls `adminAuth.revokeRefreshTokens('kid_' + kidId)`
+    - `mintKidTokenCore(db, adminAuth, { code }): Promise<{ token: string }>` — public; validates code not revoked/expired; returns custom token for uid `kid_{familyId}_{kidId}` with claims `{ familyId, kidId, role: 'kid' }`
+    - `revokeKidAccessCore(db, adminAuth, auth, { familyId, kidId }): Promise<void>` — parent-only; verifies the kid exists in the caller's family, marks all of the kid's codes revoked, and calls `adminAuth.revokeRefreshTokens('kid_' + familyId + '_' + kidId)`
   - Exported callables: `createJoinCode`, `mintKidToken`, `revokeKidAccess`
 
 - [ ] **Step 1: Scaffold the functions workspace**
@@ -1376,7 +1376,7 @@ import { createJoinCodeCore, mintKidTokenCore, revokeKidAccessCore } from './joi
 let db: Firestore;
 let adminAuth: Auth;
 const parentAuth = { uid: 'p1', token: {} } as never;
-const kidAuth = { uid: 'kid_k1', token: { role: 'kid', familyId: 'fam1', kidId: 'k1' } } as never;
+const kidAuth = { uid: 'kid_fam1_k1', token: { role: 'kid', familyId: 'fam1', kidId: 'k1' } } as never;
 
 beforeAll(() => {
   process.env.GCLOUD_PROJECT = 'money-kids-test';
@@ -1530,7 +1530,8 @@ export async function mintKidTokenCore(
     familyId: string; kidId: string; revoked: boolean; expiresAt: Timestamp;
   };
   if (revoked || expiresAt.toMillis() < Date.now()) throw invalid;
-  const token = await adminAuth.createCustomToken(`kid_${kidId}`, { familyId, kidId, role: 'kid' });
+  // UID is family-namespaced: kid doc IDs are only unique within a family
+  const token = await adminAuth.createCustomToken(`kid_${familyId}_${kidId}`, { familyId, kidId, role: 'kid' });
   return { token };
 }
 
@@ -1541,6 +1542,8 @@ export async function revokeKidAccessCore(
   data: { familyId: string; kidId: string },
 ): Promise<void> {
   await assertParentCaller(db, data.familyId, auth);
+  const kid = await db.doc(`families/${data.familyId}/kids/${data.kidId}`).get();
+  if (!kid.exists) throw new HttpsError('not-found', 'kid not found in this family');
   const codes = await db.collection('joinCodes')
     .where('familyId', '==', data.familyId)
     .where('kidId', '==', data.kidId)
@@ -1548,7 +1551,7 @@ export async function revokeKidAccessCore(
   const batch = db.batch();
   for (const c of codes.docs) batch.update(c.ref, { revoked: true });
   await batch.commit();
-  await adminAuth.revokeRefreshTokens(`kid_${data.kidId}`).catch((e: { code?: string }) => {
+  await adminAuth.revokeRefreshTokens(`kid_${data.familyId}_${data.kidId}`).catch((e: { code?: string }) => {
     if (e.code !== 'auth/user-not-found') throw e; // kid may never have signed in
   });
 }
@@ -1613,7 +1616,7 @@ import { approveInvoiceCore } from './approval.js';
 
 let db: Firestore;
 const parentAuth = { uid: 'p1', token: {} } as never;
-const kidAuth = { uid: 'kid_k1', token: { role: 'kid', familyId: 'fam1', kidId: 'k1' } } as never;
+const kidAuth = { uid: 'kid_fam1_k1', token: { role: 'kid', familyId: 'fam1', kidId: 'k1' } } as never;
 
 const rules = [
   { nameEs: 'Ahorro', nameEn: 'Savings', basisPoints: 2000, destination: 'savings' },
@@ -1866,8 +1869,8 @@ import { getApps, initializeApp } from 'firebase-admin/app';
 import { acceptCounterOfferCore } from './counterOffer.js';
 
 let db: Firestore;
-const kidAuth = { uid: 'kid_k1', token: { role: 'kid', familyId: 'fam1', kidId: 'k1' } } as never;
-const siblingAuth = { uid: 'kid_k2', token: { role: 'kid', familyId: 'fam1', kidId: 'k2' } } as never;
+const kidAuth = { uid: 'kid_fam1_k1', token: { role: 'kid', familyId: 'fam1', kidId: 'k1' } } as never;
+const siblingAuth = { uid: 'kid_fam1_k2', token: { role: 'kid', familyId: 'fam1', kidId: 'k2' } } as never;
 const parentAuth = { uid: 'p1', token: {} } as never;
 
 beforeAll(() => {
@@ -1971,7 +1974,7 @@ git commit -m "feat(functions): kid-callable counter-offer acceptance at parent'
 **Interfaces:**
 - Consumes: `assertParentCaller` (Task 9), `validateDeductionRules` (Task 2).
 - Produces:
-  - `recordPayoutCore(db, auth, { familyId, kidId, balance: 'spendable' | 'savings', amount, note, requestId })` — parent-only; ledger doc `payout_{requestId}`; enforces `0 < amount <= that balance`. **Truly idempotent:** retrying an already-recorded `requestId` with an identical payload (kidId, balance, amount) succeeds as a no-op — a client that lost the response can safely retry; the same `requestId` with a different payload throws `already-exists`
+  - `recordPayoutCore(db, auth, { familyId, kidId, balance: 'spendable' | 'savings', amount, note, requestId })` — parent-only; ledger doc `payout_{requestId}`; enforces `0 < amount <= that balance`. **Truly idempotent:** retrying an already-recorded `requestId` with an identical full payload (kidId, balance, amount, note, and the same calling parent) succeeds as a no-op — a client that lost the response can safely retry; the same `requestId` with any difference in payload or caller throws `already-exists`
   - `setDeductionRulesCore(db, auth, { familyId, rules })` — parent-only; validates then writes `deductionRules` on the family (admin write bypasses the client immutability rule by design)
   - Callables: `recordPayout`, `setDeductionRules`
 
@@ -1986,7 +1989,7 @@ import { recordPayoutCore } from './payout.js';
 
 let db: Firestore;
 const parentAuth = { uid: 'p1', token: {} } as never;
-const kidAuth = { uid: 'kid_k1', token: { role: 'kid', familyId: 'fam1', kidId: 'k1' } } as never;
+const kidAuth = { uid: 'kid_fam1_k1', token: { role: 'kid', familyId: 'fam1', kidId: 'k1' } } as never;
 
 beforeAll(() => {
   process.env.GCLOUD_PROJECT = 'money-kids-test';
@@ -2014,6 +2017,9 @@ describe('recordPayoutCore', () => {
     expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(4000);
     // same requestId with a different payload: rejected, still no double debit
     await expect(recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 100, note: 'efectivo', requestId: 'r1' })).rejects.toThrow(/mismatch/i);
+    // same payload but a DIFFERENT parent: also rejected (not their payout)
+    await db.doc('families/fam1/members/p2').set({ role: 'parent', displayName: 'Ana' });
+    await expect(recordPayoutCore(db, { uid: 'p2', token: {} } as never, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 3000, note: 'efectivo', requestId: 'r1' })).rejects.toThrow(/mismatch/i);
     expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(4000);
   });
   it('savings payouts debit savings', async () => {
@@ -2103,9 +2109,14 @@ export async function recordPayoutCore(
     const payoutRef = db.doc(`families/${data.familyId}/ledger/payout_${data.requestId}`);
     const existing = await tx.get(payoutRef);
     if (existing.exists) {
+      // full audit payload must match, including the caller — otherwise a
+      // different parent's retry would get a misleading success for someone
+      // else's recorded payout
       const identical = existing.get('kidId') === data.kidId
         && existing.get('balance') === data.balance
-        && existing.get('amount') === data.amount;
+        && existing.get('amount') === data.amount
+        && existing.get('note') === data.note
+        && existing.get('createdBy') === auth!.uid;
       if (identical) return; // idempotent retry: already recorded, no double debit
       throw new HttpsError('already-exists', 'requestId reused with mismatched payload');
     }
