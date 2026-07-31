@@ -1,0 +1,9 @@
+{
+  "name": "money-kids",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "workspaces": ["packages/*", "functions"],
+  "scripts": {
+    "test": "npm test --workspaces --if-present"
+  }
+}
