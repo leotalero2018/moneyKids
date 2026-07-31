@@ -70,4 +70,24 @@ describe('computeDeductions', () => {
     expect(() => computeDeductions(0, [])).toThrow(/positive integer/);
     expect(() => computeDeductions(10.5, [])).toThrow(/positive integer/);
   });
+  it('redistributes remainder to rule with largest fractional part', () => {
+    // gross 3 with rules [6667bp, 3333bp]
+    // raw: [2.0001, 0.9999], floors: [2, 0], target: 3, remainder: 1
+    // largest fraction is 0.9999 (index 1) → gets the extra cent
+    const a: DeductionRule = { nameEs: 'a', nameEn: 'a', basisPoints: 6667, destination: 'withheld' };
+    const b: DeductionRule = { nameEs: 'b', nameEn: 'b', basisPoints: 3333, destination: 'withheld' };
+    const r = computeDeductions(3, [a, b]);
+    expect(r.lines.map((l) => l.amount)).toEqual([2, 1]);
+    expect(r.netAmount).toBe(0);
+  });
+  it('breaks ties in remainder distribution by rule order', () => {
+    // gross 150 with rules [2500bp, 2500bp]
+    // raw: [37.5, 37.5], floors: [37, 37], target: 75, remainder: 1
+    // both have equal fractions (0.5) → first rule gets the extra cent
+    const a: DeductionRule = { nameEs: 'a', nameEn: 'a', basisPoints: 2500, destination: 'withheld' };
+    const b: DeductionRule = { nameEs: 'b', nameEn: 'b', basisPoints: 2500, destination: 'withheld' };
+    const r = computeDeductions(150, [a, b]);
+    expect(r.lines.map((l) => l.amount)).toEqual([38, 37]);
+    expect(r.netAmount).toBe(75);
+  });
 });
