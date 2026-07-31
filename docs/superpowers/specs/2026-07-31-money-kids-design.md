@@ -39,20 +39,32 @@ The invoice loop itself is the teaching — no lesson library in v1.
 
 All data nests under the family document so security rules reduce to "only your own family":
 
-- `families/{familyId}` — name, language preference, currency (ISO 4217), createdBy, deduction rules `[{name (ES/EN), percent, destination: savings | withheld}]`
+- `families/{familyId}` — name, language preference, currency (ISO 4217), createdBy, deduction rules `[{name (ES/EN), basisPoints, destination: savings | withheld}]`. Rules are validated on write: each `basisPoints` is a non-negative integer, and the sum across rules is ≤ 10000 (100%) — net can never go negative. Rules are **snapshotted at approval**: the approval function computes the breakdown from the rules current at that moment, which is exactly what the parent sees on the review screen before confirming; changing family rules never affects already-approved invoices.
 - `families/{familyId}/members/{userId}` — role (parent), display name
 - `families/{familyId}/kids/{kidId}` — name, avatar, birth year, age-mode override, deductions-enabled flag, spendable balance and savings balance (minor units)
 - `families/{familyId}/activities/{activityId}` — title, description, suggested price, category, repeatable flag, active flag
-- `families/{familyId}/invoices/{invoiceId}` — kidId, optional activityId, description, photo refs, status, and an immutable money/audit record: `requestedAmount` (set by the kid at first send, never overwritten), optional `counterOffer {amount, note, parentId, at}`, `approvedAmount` (gross, set only at approval), `deductions [{name, percent, amount, destination}]` and `netAmount` (both computed at approval from the family's rules, frozen on the invoice), and an append-only `events` array where every transition records `{from, to, actorUid, at, note}`
-- `families/{familyId}/ledger/{entryId}` — kidId, type (credit | savings-credit | payout), amount, linked invoiceId (credits), note (payouts), createdBy, timestamp
+- `families/{familyId}/invoices/{invoiceId}` — kidId, optional activityId, description, photo refs, status, and an immutable money/audit record: `requestedAmount` (the kid's current ask — initial value immutable in events, revisable on resend per the transition matrix), optional `counterOffer {amount, note, parentId, at}`, `approvedAmount` (gross, set only at approval), `deductions [{name, basisPoints, amount, destination}]` and `netAmount` (both computed at approval from the family's rules, frozen on the invoice), and an append-only `events` array where every transition records `{from, to, actorUid, at, note}`
+- `families/{familyId}/ledger/{entryId}` — kidId, type (credit | savings-credit | payout), **balance (spendable | savings)** — the balance the entry credited or debited, so history is fully reconstructible — amount (always positive; type determines direction), linked invoiceId (credits), note (payouts), createdBy, timestamp. Credits carry `balance: spendable`, savings-credits `balance: savings`, payouts whichever balance they drew from.
 
 **Invoice status machine:** `draft → sent → approved | countered | returned`; `returned → sent` (edit + resend); `countered → approved` (kid accepts) or `countered → sent` (kid edits and resends); approved amounts are later covered by `payout` ledger entries. Drafts are Firestore documents (status `draft`), created before any photo upload — so drafts survive device loss and Storage rules can authorize uploads against an existing invoice doc.
 
-**One-time activities:** "one-time" means **once per kid**. An activity becomes ineligible for a kid once they have any non-returned invoice (`sent`, `countered`, or `approved`) referencing it; creation of a second one is blocked client-side, and the approval Cloud Function rejects a duplicate approval for the same kid+activity. If two kids invoice the same one-time activity concurrently, the parent resolves it in review (approve one, return the other with feedback).
+**Transition & field matrix (rule-enforced):**
+
+| Status | Who may act | Editable fields | Allowed transitions |
+|---|---|---|---|
+| `draft` | owning kid | description, photos, requestedAmount, activityId | → `sent` (kid); kid may **delete** the draft |
+| `sent` | parent only | none (kid edits require going through `returned`/`countered`) | → `approved` (function), `countered` (parent), `returned` (parent) |
+| `returned` | owning kid | description, photos, requestedAmount | → `sent` (kid) |
+| `countered` | owning kid | description, photos, requestedAmount (to justify price) | → `approved` (function, kid accepts), `sent` (kid resends) |
+| `approved` | nobody | none — terminal and immutable | none |
+
+The **initial** `requestedAmount` (first send) is immutable; revisions on resend are permitted but every `sent` transition snapshots the then-current amount into the `events` entry, so the negotiation history is fully reconstructible. Rules require every client-written event's `actorUid == request.auth.uid` and `at == request.time` — actors and timestamps are server-derived, never client-claimed; approval events are written by the Cloud Function. **Deletion is allowed only for `draft` invoices by the owning kid**; `sent` and later invoices can never be deleted, so ledger history always resolves.
+
+**One-time activities:** "one-time" means **once per kid**. **Duplicate pending invoices are allowed by design** — a kid bypassing the UI can submit several against the same one-time activity, which creates review noise but never duplicate money: the only enforced invariant is in the approval Cloud Function, which rejects approving a one-time activity for a kid who already has an approved invoice against it. The client hides already-used one-time activities as a courtesy, and the parent resolves any duplicates in review (approve one, return the rest with feedback). No claim-reservation system in v1.
 
 **Ledger integrity (server-authoritative):** approvals and payouts are performed only by callable Cloud Functions running a Firestore transaction: approval verifies the invoice is in an approvable state, computes deductions from the family's rules (integer minor-unit math, largest-remainder rounding so line items always sum exactly to gross), freezes `approvedAmount`/`deductions`/`netAmount` on the invoice, writes the spendable credit with the **deterministic ID `credit_{invoiceId}`** and any savings credit as `savings_{invoiceId}` (both create-only — duplicate credits are structurally impossible), and updates the kid's balances atomically. Payout specifies which balance it draws from (spendable or savings), verifies `0 < amount ≤ that balance`, appends a payout entry, and debits it. Security rules deny all client writes to `ledger`, to `kids.*.balance`, and to invoice status transitions into `approved`. Ledger entries are append-only.
 
-**Photos:** Firebase Storage under `families/{familyId}/kids/{kidId}/invoices/{invoiceId}/`, readable only by the family. Writes/deletes are allowed only to the kid session whose `kidId` claim matches the path (or a parent of the family), only while the linked invoice is in an editable status (`draft`, `sent`, `returned`, `countered`), with limits of 5 MB per file and `image/*` content types. The client reserves the Firestore auto-ID by creating the `draft` invoice doc before uploading.
+**Photos:** Firebase Storage under `families/{familyId}/kids/{kidId}/invoices/{invoiceId}/`. **Reads:** parents may read any path in their family; kid sessions may read only paths whose `{kidId}` segment matches their `kidId` claim — siblings cannot see each other's photos. **Writes/deletes:** only the matching kid session (or a family parent), only while the linked invoice is editable per the matrix above (kid-editable states: `draft`, `returned`, `countered`), with limits of 5 MB per file and `image/*` content types. The client reserves the Firestore auto-ID by creating the `draft` invoice doc before uploading.
 
 ## UI & age modes
 
@@ -71,8 +83,9 @@ Two experiences in one app:
 
 ## Security
 
-- Firestore rules: parents read/write only their own family. Kid sessions can create/edit only their own invoices while status is `draft`, `sent`, `returned`, or `countered`; kids can never write balances, ledger entries, or other kids' data.
+- Firestore rules: parents read/write only their own family. Kid sessions can create/edit only their own invoices in the kid-editable states of the transition matrix (`draft`, `returned`, `countered`); kids can never write balances, ledger entries, or other kids' data.
 - **Money mutations are server-only:** rules deny all client writes to `ledger`, kid balances, and invoice transitions into `approved`; those happen exclusively through the callable Cloud Functions (see Data model).
+- **Callable functions have their own authorization contract** — the Admin SDK bypasses Firestore rules, so rules protect nothing inside a function. Every callable (approval, payout, join-code minting, kid revocation) must independently verify, from its own auth context: the caller is an authenticated member of the target family with the required role, and every target ID (invoice, kid, activity) belongs to that same family. Required role is parent for approval, payout, join-code minting, and revocation — with one exception: **counter-offer acceptance** may be called by the owning kid (matching `kidId` claim), and it approves strictly at the parent's recorded `counterOffer.amount`, which the parent pre-authorized when countering. Cross-family and wrong-role calls are rejected, and emulator tests must cover both rejections for each function.
 - **Query rules are explicit, not implicit:** Firestore rules do not filter query results, so kid reads of `invoices` and `ledger` are only allowed for queries constrained by `kidId == request.auth.token.kidId` (rules check `resource.data.kidId` on reads); a kid querying the whole collection fails. Kids may read the family's `activities` and their own `kids/{kidId}` doc only. Emulator tests must prove the broad queries fail.
 - Join codes expire and are revocable; revocation also revokes the kid UID's refresh tokens (≤1-hour residual window, see Accounts).
 
@@ -84,7 +97,7 @@ Two experiences in one app:
 
 ## Testing
 
-- **Vitest** unit tests for the invoice state machine and ledger math, including deduction computation (percentages in minor units, largest-remainder rounding, line items summing exactly to gross).
+- **Vitest** unit tests for the invoice state machine and ledger math, including deduction computation (basis points over minor units, largest-remainder rounding, line items summing exactly to gross, sum-cap validation).
 - **Firebase emulator** tests for security rules and the approval/payout Cloud Functions (safety-critical: kids must never be able to credit themselves; client writes to ledger/balances must fail; unconstrained kid queries must fail; duplicate approval must fail; payout over balance must fail).
 - **Playwright** mobile-viewport e2e: sign up → add kid → kid sends invoice with photo → parent approves → balance updates → payout.
 
