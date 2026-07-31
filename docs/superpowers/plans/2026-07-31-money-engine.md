@@ -466,7 +466,7 @@ export default defineConfig({
   "firestore": { "rules": "firestore.rules", "indexes": "firestore.indexes.json" },
   "storage": { "rules": "storage.rules" },
   "emulators": {
-    "firestore": { "port": 8080 },
+    "firestore": { "port": 8480 },
     "auth": { "port": 9099 },
     "storage": { "port": 9199 },
     "functions": { "port": 5001 },

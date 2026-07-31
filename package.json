@@ -1,9 +1,18 @@
 {
   "name": "money-kids",
   "private": true,
-  "engines": { "node": ">=20" },
-  "workspaces": ["packages/*", "functions"],
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*",
+    "functions"
+  ],
   "scripts": {
-    "test": "npm test --workspaces --if-present"
+    "test": "npm test --workspaces --if-present",
+    "test:rules": "firebase emulators:exec --only firestore,storage --project money-kids-test \"npm test -w @money-kids/rules-tests\""
+  },
+  "devDependencies": {
+    "firebase-tools": "^15.25.1"
   }
 }
