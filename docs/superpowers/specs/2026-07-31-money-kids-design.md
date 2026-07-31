@@ -16,7 +16,8 @@ It is a product for many families (multi-tenant), not a single-family tool.
 - **Photos are core evidence**: kids attach photos to invoices (the book they read, the drawing of their idea). Compressed client-side (~1200px) before upload.
 - **Parents review** each invoice: **Approve** (credits balance), **Counter-offer** (different amount + note; the kid either accepts the new amount, which approves the invoice, or edits the invoice to justify their price and resends), or **Return with feedback** (kid edits and resends). Rejections are always feedback, never a dead end.
 - **Ledger, not payments.** Approvals credit a per-kid balance. Parents pay out in real life and record the payout, which debits the ledger. No money moves inside the app in v1.
-- **Money representation:** each family has an ISO 4217 currency (e.g. COP, USD) set at creation. All amounts are signed integers in minor units (cents; COP has 0 minor digits). Payouts may be partial but must satisfy `0 < payout ≤ current balance` — no negative balances in v1.
+- **Deductions teach real finance.** Families can configure **deduction rules** — named percentages applied when an invoice is approved, e.g. "Family tax 10%", "Savings 20%". Each rule has a destination: **savings** (credits the kid's separate savings balance) or **withheld** (gone, like a real tax or fee). The approved invoice shows the full breakdown: gross amount, each deduction as a line item, and the net credited to the spendable balance. Deductions are off by default, with a one-tap starter preset ("Savings 20% + Family tax 10%"), and can be disabled per kid (recommended off for the 5–8 mode until the kid is ready).
+- **Money representation:** each family has an ISO 4217 currency (e.g. COP, USD) set at creation. All amounts are signed integers in minor units (cents; COP has 0 minor digits). Payouts may be partial, specify which balance they draw from (spendable or savings), and must satisfy `0 < payout ≤ that balance` — no negative balances in v1.
 
 The invoice loop itself is the teaching — no lesson library in v1.
 
@@ -38,18 +39,18 @@ The invoice loop itself is the teaching — no lesson library in v1.
 
 All data nests under the family document so security rules reduce to "only your own family":
 
-- `families/{familyId}` — name, language preference, currency (ISO 4217), createdBy
+- `families/{familyId}` — name, language preference, currency (ISO 4217), createdBy, deduction rules `[{name (ES/EN), percent, destination: savings | withheld}]`
 - `families/{familyId}/members/{userId}` — role (parent), display name
-- `families/{familyId}/kids/{kidId}` — name, avatar, birth year, age-mode override, current balance (minor units)
+- `families/{familyId}/kids/{kidId}` — name, avatar, birth year, age-mode override, deductions-enabled flag, spendable balance and savings balance (minor units)
 - `families/{familyId}/activities/{activityId}` — title, description, suggested price, category, repeatable flag, active flag
-- `families/{familyId}/invoices/{invoiceId}` — kidId, optional activityId, description, photo refs, status, and an immutable money/audit record: `requestedAmount` (set by the kid at first send, never overwritten), optional `counterOffer {amount, note, parentId, at}`, `approvedAmount` (set only at approval), and an append-only `events` array where every transition records `{from, to, actorUid, at, note}`
-- `families/{familyId}/ledger/{entryId}` — kidId, type (credit | payout), amount, linked invoiceId (credits), note (payouts), createdBy, timestamp
+- `families/{familyId}/invoices/{invoiceId}` — kidId, optional activityId, description, photo refs, status, and an immutable money/audit record: `requestedAmount` (set by the kid at first send, never overwritten), optional `counterOffer {amount, note, parentId, at}`, `approvedAmount` (gross, set only at approval), `deductions [{name, percent, amount, destination}]` and `netAmount` (both computed at approval from the family's rules, frozen on the invoice), and an append-only `events` array where every transition records `{from, to, actorUid, at, note}`
+- `families/{familyId}/ledger/{entryId}` — kidId, type (credit | savings-credit | payout), amount, linked invoiceId (credits), note (payouts), createdBy, timestamp
 
 **Invoice status machine:** `draft → sent → approved | countered | returned`; `returned → sent` (edit + resend); `countered → approved` (kid accepts) or `countered → sent` (kid edits and resends); approved amounts are later covered by `payout` ledger entries. Drafts are Firestore documents (status `draft`), created before any photo upload — so drafts survive device loss and Storage rules can authorize uploads against an existing invoice doc.
 
 **One-time activities:** "one-time" means **once per kid**. An activity becomes ineligible for a kid once they have any non-returned invoice (`sent`, `countered`, or `approved`) referencing it; creation of a second one is blocked client-side, and the approval Cloud Function rejects a duplicate approval for the same kid+activity. If two kids invoice the same one-time activity concurrently, the parent resolves it in review (approve one, return the other with feedback).
 
-**Ledger integrity (server-authoritative):** approvals and payouts are performed only by callable Cloud Functions running a Firestore transaction: approval verifies the invoice is in an approvable state, writes the ledger credit with the **deterministic ID `credit_{invoiceId}`** (create-only — a duplicate credit is structurally impossible), sets `approvedAmount`, and updates the kid's balance atomically. Payout verifies `0 < amount ≤ balance`, appends a payout entry, and debits the balance. Security rules deny all client writes to `ledger`, to `kids.*.balance`, and to invoice status transitions into `approved`. Ledger entries are append-only.
+**Ledger integrity (server-authoritative):** approvals and payouts are performed only by callable Cloud Functions running a Firestore transaction: approval verifies the invoice is in an approvable state, computes deductions from the family's rules (integer minor-unit math, largest-remainder rounding so line items always sum exactly to gross), freezes `approvedAmount`/`deductions`/`netAmount` on the invoice, writes the spendable credit with the **deterministic ID `credit_{invoiceId}`** and any savings credit as `savings_{invoiceId}` (both create-only — duplicate credits are structurally impossible), and updates the kid's balances atomically. Payout specifies which balance it draws from (spendable or savings), verifies `0 < amount ≤ that balance`, appends a payout entry, and debits it. Security rules deny all client writes to `ledger`, to `kids.*.balance`, and to invoice status transitions into `approved`. Ledger entries are append-only.
 
 **Photos:** Firebase Storage under `families/{familyId}/kids/{kidId}/invoices/{invoiceId}/`, readable only by the family. Writes/deletes are allowed only to the kid session whose `kidId` claim matches the path (or a parent of the family), only while the linked invoice is in an editable status (`draft`, `sent`, `returned`, `countered`), with limits of 5 MB per file and `image/*` content types. The client reserves the Firestore auto-ID by creating the `draft` invoice doc before uploading.
 
@@ -58,7 +59,7 @@ All data nests under the family document so security rules reduce to "only your 
 Two experiences in one app:
 
 - **Parent view:** invoice inbox (badge count), activity board management, per-kid balances, payout recording, family settings.
-- **Kid view:** activity board ("ways to earn"), prominent "New invoice" button, big celebratory balance display, invoice history with statuses.
+- **Kid view:** activity board ("ways to earn"), prominent "New invoice" button, big celebratory balance display (spendable + savings when deductions are on), invoice history with statuses. Approved invoices show the gross → deductions → net breakdown like a real pay stub, with kid-friendly explanations of each line.
 
 **Age modes** are presets of the same kid screens, set by birth year, overridable per kid:
 
@@ -83,7 +84,7 @@ Two experiences in one app:
 
 ## Testing
 
-- **Vitest** unit tests for the invoice state machine and ledger math.
+- **Vitest** unit tests for the invoice state machine and ledger math, including deduction computation (percentages in minor units, largest-remainder rounding, line items summing exactly to gross).
 - **Firebase emulator** tests for security rules and the approval/payout Cloud Functions (safety-critical: kids must never be able to credit themselves; client writes to ledger/balances must fail; unconstrained kid queries must fail; duplicate approval must fail; payout over balance must fail).
 - **Playwright** mobile-viewport e2e: sign up → add kid → kid sends invoice with photo → parent approves → balance updates → payout.
 
@@ -92,6 +93,6 @@ Two experiences in one app:
 - Real money transfers / payment integration
 - Push notifications (v1 uses in-app badge counts)
 - Micro-lessons or curriculum content
-- Savings goals
+- Savings **goals** (targets like "save for a bike" with progress tracking — the savings *balance* from deductions is in v1, goals on top of it are not)
 - Voice notes for the 5–8 mode (photo + tap ships first)
 - Native mobile apps
