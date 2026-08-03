@@ -1,6 +1,54 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isKidToken() { return signedIn() && request.auth.token.get('role', '') == 'kid'; }
+
+    match /families/{familyId} {
+      function isFamilyParent() {
+        return signedIn() && !isKidToken()
+          && exists(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid));
+      }
+      function isFamilyKid() {
+        return isKidToken() && request.auth.token.familyId == familyId;
+      }
+      function authKidId() { return request.auth.token.kidId; }
+
+      allow get: if isFamilyParent() || isFamilyKid();
+      allow create: if signedIn() && !isKidToken()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.deductionRules == []
+        && request.resource.data.currency is string;
+      allow update: if isFamilyParent()
+        && !request.resource.data.diff(resource.data).affectedKeys()
+             .hasAny(['currency', 'createdBy', 'deductionRules']);
+      allow delete: if false;
+
+      match /members/{memberId} {
+        allow read: if isFamilyParent() || isFamilyKid();
+        // founder creates their own member doc in the same batch as the family
+        allow create: if signedIn() && !isKidToken()
+          && memberId == request.auth.uid
+          && request.resource.data.role == 'parent'
+          && getAfter(/databases/$(database)/documents/families/$(familyId)).data.createdBy == request.auth.uid;
+        allow update: if isFamilyParent() && memberId == request.auth.uid
+          && request.resource.data.role == 'parent';
+        allow delete: if false;
+      }
+
+      match /kids/{kidId} {
+        allow get, list: if isFamilyParent() || (isFamilyKid() && kidId == authKidId());
+        allow create: if isFamilyParent()
+          && request.resource.data.spendableBalance == 0
+          && request.resource.data.savingsBalance == 0;
+        allow update: if isFamilyParent()
+          && !request.resource.data.diff(resource.data).affectedKeys()
+               .hasAny(['spendableBalance', 'savingsBalance']);
+        allow delete: if false;
+      }
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
