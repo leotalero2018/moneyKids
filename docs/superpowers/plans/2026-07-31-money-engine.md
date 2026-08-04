@@ -798,7 +798,7 @@ import {
   doc, collection, getDoc, getDocs, setDoc, updateDoc, deleteDoc, writeBatch, query, where, serverTimestamp,
 } from 'firebase/firestore';
 import { setupTestEnv, parentCtx, kidCtx, seed } from './helpers.js';
-import type { RulesTestEnvironment } from '@firebase/rules-unit-testing';
+import type { RulesTestEnvironment, RulesTestContext } from '@firebase/rules-unit-testing';
 
 let env: RulesTestEnvironment;
 beforeAll(async () => { env = await setupTestEnv(); });
@@ -823,8 +823,6 @@ beforeEach(async () => {
     });
   });
 });
-
-import type { RulesTestContext } from '@firebase/rules-unit-testing';
 
 // eventCount = the invoice's NEW event count after this transition (previous + 1)
 function sendBatch(db: ReturnType<RulesTestContext['firestore']>, invoiceId: string, from: string, amount: number, eventCount: number) {
@@ -880,6 +878,57 @@ describe('invoice lifecycle', () => {
     await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1/events/e2'), {
       from: 'sent', to: 'approved', actorUid: 'kid_fam1_k1', at: serverTimestamp(), kidId: 'k1',
     }));
+  });
+
+  it('standalone e0 on a fresh draft is denied (from != to is load-bearing)', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
+    // eventCount is still 0, so 'e0' satisfies the deterministic-ID check. With no
+    // invoice write in the batch the only thing left to stop it is from != to.
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1/events/e0'), {
+      from: 'draft', to: 'draft', actorUid: 'kid_fam1_k1', at: serverTimestamp(), kidId: 'k1',
+    }));
+    // claiming a transition that did not happen fails the to == invAfter().status check
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1/events/e0'), {
+      from: 'draft', to: 'sent', actorUid: 'kid_fam1_k1', at: serverTimestamp(), requestedAmount: 5000, kidId: 'k1',
+    }));
+  });
+
+  it('events are key-whitelisted: no extra keys, no requestedAmount on non-sent events', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
+
+    // otherwise-valid send batch, but the event smuggles a money field into the
+    // permanently immutable audit log
+    const smuggle = writeBatch(kdb);
+    smuggle.update(doc(kdb, 'families/fam1/invoices/inv1'), { status: 'sent', requestedAmount: 5000, eventCount: 1 });
+    smuggle.set(doc(kdb, 'families/fam1/invoices/inv1/events/e1'), {
+      from: 'draft', to: 'sent', actorUid: 'kid_fam1_k1', at: serverTimestamp(),
+      requestedAmount: 5000, kidId: 'k1', netAmount: 999999,
+    });
+    await assertFails(smuggle.commit());
+
+    // a legitimate send, then a return whose event carries requestedAmount it has no business holding
+    await assertSucceeds(sendBatch(kdb, 'inv1', 'draft', 5000, 1));
+    const pdb = parentCtx(env, 'p1').firestore();
+    const ret = writeBatch(pdb);
+    ret.update(doc(pdb, 'families/fam1/invoices/inv1'), { status: 'returned', eventCount: 2 });
+    ret.set(doc(pdb, 'families/fam1/invoices/inv1/events/e2'), {
+      from: 'sent', to: 'returned', actorUid: 'p1', at: serverTimestamp(), requestedAmount: 999999, kidId: 'k1',
+    });
+    await assertFails(ret.commit());
+  });
+
+  it('a sibling kid cannot read another kid\'s invoice or its events', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
+    await sendBatch(kdb, 'inv1', 'draft', 5000, 1);
+
+    const sib = kidCtx(env, 'fam1', 'k2').firestore();
+    await assertFails(getDoc(doc(sib, 'families/fam1/invoices/inv1')));
+    await assertFails(getDoc(doc(sib, 'families/fam1/invoices/inv1/events/e1')));
+    await assertFails(getDocs(query(collection(sib, 'families/fam1/invoices/inv1/events'), where('kidId', '==', 'k1'))));
+    await assertFails(getDocs(collection(sib, 'families/fam1/invoices/inv1/events')));
   });
 
   it('kid cannot edit a sent invoice; parent returns it; kid edits and resends', async () => {
@@ -1047,15 +1096,27 @@ Add inside `match /families/{familyId} { ... }` (after the `kids` block):
           allow read: if isFamilyParent()
             || (isFamilyKid() && resource.data.kidId == authKidId());
           allow create: if (isFamilyParent() || isFamilyKid())
+            // events are permanently immutable, so the key set is whitelisted:
+            // anything that lands here can never be corrected
+            && request.resource.data.keys().hasOnly(
+                 ['from', 'to', 'actorUid', 'at', 'note', 'requestedAmount', 'kidId'])
             && eventId == 'e' + string(invAfter().eventCount)
             && request.resource.data.actorUid == request.auth.uid
             && request.resource.data.at == request.time
             && request.resource.data.kidId == invAfter().kidId
             && request.resource.data.from == invBefore().status
             && request.resource.data.to == invAfter().status
+            // LOAD-BEARING: do not remove. This is the only thing that stops a
+            // standalone event create when the same batch does not transition the
+            // invoice — including 'e0' on a fresh draft, where the deterministic-ID
+            // check below passes because eventCount is still 0. With no invoice
+            // write in the batch, invBefore().status == invAfter().status, so
+            // requiring from != to is what makes fabricated events impossible.
             && request.resource.data.from != request.resource.data.to
-            && (request.resource.data.to != 'sent'
-                || request.resource.data.requestedAmount == invAfter().requestedAmount);
+            // requestedAmount belongs to 'sent' events only, and must match the invoice
+            && (request.resource.data.to == 'sent'
+                  ? request.resource.data.requestedAmount == invAfter().requestedAmount
+                  : !request.resource.data.keys().hasAny(['requestedAmount']));
           allow update, delete: if false;
         }
       }
