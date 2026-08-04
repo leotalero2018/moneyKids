@@ -151,6 +151,12 @@ service cloud.firestore {
           allow update, delete: if false;
         }
       }
+
+      match /ledger/{entryId} {
+        allow get, list: if isFamilyParent()
+          || (isFamilyKid() && resource.data.kidId == authKidId());
+        allow write: if false;
+      }
     }
 
     match /{document=**} {
