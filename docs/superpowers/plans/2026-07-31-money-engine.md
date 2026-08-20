@@ -18,7 +18,12 @@
 - Family `currency` immutable after creation; `deductionRules` writable only via callable.
 - Kids may edit invoices only in statuses `draft | returned | countered`; only `draft` deletable; no client transition into `approved`.
 - Events live in an `events` subcollection under each invoice, create-only, with deterministic IDs `e{N}` tied to the invoice's `eventCount` (starts 0, +1 per transition, transition and event created in one batch); `actorUid == request.auth.uid`, `at == request.time`; every `→ sent` event includes `requestedAmount`.
-- Node 20, TypeScript `strict: true` everywhere. Run all emulator tests via `firebase emulators:exec`.
+- Node ≥ 20.11 (`import.meta.dirname` needs 20.11; prefer `fileURLToPath(import.meta.url)` regardless), TypeScript `strict: true` everywhere. Run all emulator tests via `firebase emulators:exec`.
+- **`strict` is only real if it is checked:** every workspace has a `typecheck` script (`tsc --noEmit`) and every task's verification step runs it — Vitest transpiles without typechecking and esbuild strips types.
+- **Callable payloads are untrusted; authorization is not validation.** Every callable validates every payload field through `@money-kids/shared` validators *before* the value reaches a document path: IDs are `[A-Za-z0-9_-]{1,128}` (no `/`, no `.`/`..`), `requestId` is an opaque 8–64 char key, `note` is bounded, join codes must match the exact alphabet and length. Malformed-input tests accompany the authorization tests.
+- **"Cross-family" means a real member of another family**, not an unaffiliated stranger UID: a stranger only exercises the membership lookup. Every callable has a test where a genuine parent of `fam2` targets `fam1`, and the mirror direction, asserting no balance moved.
+- Photo count is capped at 8 per invoice, enforced on `photoPaths` in the Firestore invoice rules (Storage rules cannot count objects under a prefix). Storage writes additionally require the linked invoice's own `kidId` to equal the path's `{kidId}` segment — status alone would let a kid attach a sibling's invoice under their own prefix.
+- A family can never be created without its founder's `members/{uid}` doc in the same batch (rule-enforced): every other rule authorizes through membership, so such a family would be permanently unreachable.
 - Commit after every task (steps say when).
 
 ---
@@ -40,10 +45,11 @@
 {
   "name": "money-kids",
   "private": true,
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=20.11" },
   "workspaces": ["packages/*", "functions"],
   "scripts": {
-    "test": "npm test --workspaces --if-present"
+    "test": "npm test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
   }
 }
 ```
@@ -82,7 +88,7 @@ ui-debug.log
   "version": "0.0.1",
   "type": "module",
   "main": "src/index.ts",
-  "scripts": { "test": "vitest run" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
   "devDependencies": { "typescript": "^5.5.0", "vitest": "^2.0.0" }
 }
 ```
@@ -117,8 +123,10 @@ describe('workspace sanity', () => {
 
 - [ ] **Step 3: Install and run the test**
 
-Run: `npm install && npm test -w @money-kids/shared`
-Expected: 1 test passes.
+Run: `npm install && npm test -w @money-kids/shared && npm run typecheck -w @money-kids/shared`
+Expected: 1 test passes; `tsc --noEmit` reports no errors.
+
+**Every later task's verification step runs `npm run typecheck` for the workspace it touched, in addition to the tests** — Vitest transpiles without typechecking and esbuild strips types, so `strict: true` is otherwise never actually enforced.
 
 - [ ] **Step 4: Commit**
 
@@ -129,11 +137,11 @@ git commit -m "chore: scaffold npm-workspaces monorepo with shared package"
 
 ---
 
-### Task 2: Deduction math (`computeDeductions`)
+### Task 2: Deduction math (`computeDeductions`) + callable input validators
 
 **Files:**
-- Create: `packages/shared/src/money.ts`
-- Test: `packages/shared/src/money.test.ts`
+- Create: `packages/shared/src/money.ts`, `packages/shared/src/validate.ts`
+- Test: `packages/shared/src/money.test.ts`, `packages/shared/src/validate.test.ts`
 - Modify: `packages/shared/src/index.ts` (re-export)
 
 **Interfaces:**
@@ -144,6 +152,12 @@ git commit -m "chore: scaffold npm-workspaces monorepo with shared package"
   - `interface DeductionBreakdown { gross: number; lines: DeductionLine[]; netAmount: number; savingsTotal: number; withheldTotal: number }`
   - `validateDeductionRules(rules: unknown): asserts rules is DeductionRule[]` — full runtime validation for untrusted callable input: must be an array of ≤ 20 objects, names 1–60 char strings, destination strictly `'savings' | 'withheld'`, basisPoints non-negative integers summing ≤ 10000; throws `Error` otherwise
   - `computeDeductions(gross: number, rules: DeductionRule[]): DeductionBreakdown` — throws on non-positive-integer gross
+  - From `validate.ts` — **all callable payload fields are untrusted input; authorization is not validation.** IDs are interpolated into Firestore document paths, so an ID containing `/` re-points the path at a different document, and `requestId` additionally becomes part of a ledger doc ID:
+    - `validateId(value: unknown, label: string): string` — non-empty string, ≤ 128 chars, matching `/^[A-Za-z0-9_-]+$/` (excludes `/`, `.`, and `..`); throws `Error` naming the field
+    - `validateRequestId(value: unknown): string` — opaque client-supplied idempotency key: 8–64 chars, `/^[A-Za-z0-9_-]+$/`
+    - `validateNote(value: unknown, max?: number): string` — string, default max 500 chars; accepts `''`
+    - `validateJoinCode(value: unknown): string` — exactly 8 chars, all from the code alphabet `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`
+    - `validateBalance(value: unknown): 'spendable' | 'savings'`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -220,6 +234,78 @@ describe('computeDeductions', () => {
   it('rejects non-positive or fractional gross', () => {
     expect(() => computeDeductions(0, [])).toThrow(/positive integer/);
     expect(() => computeDeductions(10.5, [])).toThrow(/positive integer/);
+  });
+});
+```
+
+`packages/shared/src/validate.test.ts`:
+```ts
+import { describe, it, expect } from 'vitest';
+import {
+  validateId, validateRequestId, validateNote, validateJoinCode, validateBalance,
+} from './validate.js';
+
+describe('validateId', () => {
+  it('accepts normal Firestore auto-IDs', () => {
+    expect(validateId('kK9xZ2aBcDeF', 'invoiceId')).toBe('kK9xZ2aBcDeF');
+    expect(validateId('fam1', 'familyId')).toBe('fam1');
+  });
+  it('rejects path traversal and separators — these are interpolated into doc paths', () => {
+    expect(() => validateId('fam1/../fam2', 'familyId')).toThrow(/familyId/);
+    expect(() => validateId('fam1/members/p1', 'familyId')).toThrow(/familyId/);
+    expect(() => validateId('..', 'kidId')).toThrow(/kidId/);
+    expect(() => validateId('.', 'kidId')).toThrow(/kidId/);
+  });
+  it('rejects empty, oversized, and non-string values', () => {
+    expect(() => validateId('', 'kidId')).toThrow(/kidId/);
+    expect(() => validateId('x'.repeat(129), 'kidId')).toThrow(/kidId/);
+    expect(() => validateId(undefined, 'kidId')).toThrow(/kidId/);
+    expect(() => validateId(42, 'kidId')).toThrow(/kidId/);
+    expect(() => validateId({ toString: () => 'ok' }, 'kidId')).toThrow(/kidId/);
+  });
+});
+
+describe('validateRequestId', () => {
+  it('accepts a UUID and other opaque keys', () => {
+    expect(validateRequestId('9f1c2b7e-3a44-4c9d-8f21-6b0d5e7a1c33')).toHaveLength(36);
+    expect(validateRequestId('abc12345')).toBe('abc12345');
+  });
+  it('rejects too-short, too-long, and separator-bearing keys', () => {
+    expect(() => validateRequestId('short')).toThrow(/requestId/);
+    expect(() => validateRequestId('x'.repeat(65))).toThrow(/requestId/);
+    expect(() => validateRequestId('r1/../credit_inv1')).toThrow(/requestId/);
+  });
+});
+
+describe('validateNote', () => {
+  it('accepts empty and bounded text', () => {
+    expect(validateNote('')).toBe('');
+    expect(validateNote('efectivo')).toBe('efectivo');
+  });
+  it('rejects overlong text and non-strings', () => {
+    expect(() => validateNote('x'.repeat(501))).toThrow(/note/);
+    expect(() => validateNote(null)).toThrow(/note/);
+  });
+});
+
+describe('validateJoinCode', () => {
+  it('accepts a well-formed code', () => {
+    expect(validateJoinCode('ABCD2345')).toBe('ABCD2345');
+  });
+  it('rejects wrong length, lowercase, and excluded lookalike characters', () => {
+    expect(() => validateJoinCode('ABC123')).toThrow(/code/i);
+    expect(() => validateJoinCode('abcd2345')).toThrow(/code/i);
+    expect(() => validateJoinCode('ABCD2340')).toThrow(/code/i); // 0 excluded
+    expect(() => validateJoinCode('ABCD234I')).toThrow(/code/i); // I excluded
+  });
+});
+
+describe('validateBalance', () => {
+  it('accepts the two balances and rejects anything else', () => {
+    expect(validateBalance('spendable')).toBe('spendable');
+    expect(validateBalance('savings')).toBe('savings');
+    expect(() => validateBalance('pocket')).toThrow(/balance/);
+    expect(() => validateBalance(undefined)).toThrow(/balance/);
   });
 });
 ```
@@ -302,21 +388,71 @@ export function computeDeductions(gross: number, rules: DeductionRule[]): Deduct
 }
 ```
 
+`packages/shared/src/validate.ts`:
+```ts
+// Callable payloads are untrusted. These IDs are interpolated into Firestore
+// document paths, so a value containing '/' would re-point the path at a
+// different document; requestId also becomes part of a ledger document ID.
+const ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+const MAX_ID_LENGTH = 128;
+const JOIN_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const JOIN_CODE_LENGTH = 8;
+
+export function validateId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_ID_LENGTH
+      || !ID_PATTERN.test(value)) {
+    throw new Error(`${label} must be a 1-${MAX_ID_LENGTH} character id of [A-Za-z0-9_-]`);
+  }
+  return value;
+}
+
+export function validateRequestId(value: unknown): string {
+  if (typeof value !== 'string' || value.length < 8 || value.length > 64
+      || !ID_PATTERN.test(value)) {
+    throw new Error('requestId must be an opaque 8-64 character key of [A-Za-z0-9_-]');
+  }
+  return value;
+}
+
+export function validateNote(value: unknown, max = 500): string {
+  if (typeof value !== 'string' || value.length > max) {
+    throw new Error(`note must be a string of at most ${max} characters`);
+  }
+  return value;
+}
+
+export function validateJoinCode(value: unknown): string {
+  if (typeof value !== 'string' || value.length !== JOIN_CODE_LENGTH
+      || ![...value].every((c) => JOIN_CODE_ALPHABET.includes(c))) {
+    throw new Error(`join code must be ${JOIN_CODE_LENGTH} characters from the code alphabet`);
+  }
+  return value;
+}
+
+export function validateBalance(value: unknown): 'spendable' | 'savings' {
+  if (value !== 'spendable' && value !== 'savings') {
+    throw new Error("balance must be 'spendable' or 'savings'");
+  }
+  return value;
+}
+```
+
 Append to `packages/shared/src/index.ts`:
 ```ts
 export * from './money.js';
+export * from './validate.js';
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `npm test -w @money-kids/shared`
-Expected: all tests PASS.
+Run: `npm test -w @money-kids/shared && npm run typecheck -w @money-kids/shared`
+Expected: all tests PASS; no type errors.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add packages/shared
-git commit -m "feat(shared): deduction math with largest-remainder rounding"
+git commit -m "feat(shared): deduction math with largest-remainder rounding; callable input validators"
 ```
 
 ---
@@ -440,7 +576,7 @@ Create `packages/rules-tests/package.json` (below), then run `npm install -D fir
   "name": "@money-kids/rules-tests",
   "private": true,
   "type": "module",
-  "scripts": { "test": "vitest run" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^3.0.0",
     "firebase": "^10.12.0",
@@ -519,14 +655,17 @@ Add to root `package.json` scripts:
 `packages/rules-tests/src/helpers.ts`:
 ```ts
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   initializeTestEnvironment,
   type RulesTestEnvironment,
   type RulesTestContext,
 } from '@firebase/rules-unit-testing';
 
-const root = resolve(import.meta.dirname, '../../..');
+// fileURLToPath, not import.meta.dirname: the latter only exists on Node >= 20.11,
+// and this must not depend on the runner's patch version.
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 export async function setupTestEnv(): Promise<RulesTestEnvironment> {
   return initializeTestEnvironment({
@@ -650,6 +789,20 @@ describe('family creation and immutability', () => {
     batch.set(doc(db, 'families/fam9/members/p9'), { role: 'parent', displayName: 'P9' });
     await assertSucceeds(batch.commit());
   });
+  it('rejects a family created without the founder member doc (unreachable family)', async () => {
+    const db = parentCtx(env, 'p9').firestore();
+    // no member doc in the batch → family would be authorizable by nobody
+    await assertFails(setDoc(doc(db, 'families/fam10'), {
+      name: 'Orphan', language: 'en', currency: 'USD', createdBy: 'p9', deductionRules: [],
+    }));
+    // and a member doc for someone *else* does not satisfy it either
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'families/fam11'), {
+      name: 'Orphan2', language: 'en', currency: 'USD', createdBy: 'p9', deductionRules: [],
+    });
+    batch.set(doc(db, 'families/fam11/members/pOther'), { role: 'parent', displayName: 'Other' });
+    await assertFails(batch.commit());
+  });
   it('kid tokens cannot create families', async () => {
     const db = kidCtx(env, 'fam1', 'k1').firestore();
     await assertFails(setDoc(doc(db, 'families/fam8'), {
@@ -723,10 +876,14 @@ service cloud.firestore {
       function authKidId() { return request.auth.token.kidId; }
 
       allow get: if isFamilyParent() || isFamilyKid();
+      // the founder's member doc must be created in the same batch: a family
+      // whose only parent is absent from members/ is permanently unreachable,
+      // since every other rule authorizes through membership
       allow create: if signedIn() && !isKidToken()
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.deductionRules == []
-        && request.resource.data.currency is string;
+        && request.resource.data.currency is string
+        && existsAfter(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid));
       allow update: if isFamilyParent()
         && !request.resource.data.diff(resource.data).affectedKeys()
              .hasAny(['currency', 'createdBy', 'deductionRules']);
@@ -771,6 +928,110 @@ Expected: all tests PASS (including the Task 4 smoke test, whose arbitrary path 
 ```bash
 git add firestore.rules packages/rules-tests
 git commit -m "feat(rules): family isolation, immutable currency, protected balances"
+```
+
+---
+
+### Task 5.5: Spike — prove the event-sequence rule primitives execute
+
+**Why this exists:** Task 6's event enforcement rests on two rules primitives whose behavior must be confirmed against the actual rules engine before building on them: a **computed path segment** inside `existsAfter`, and `getAfter`/`existsAfter` resolving *within a batch*. If either fails, the whole event-sequence design changes shape — so it is proven here, in isolation, in one short task rather than discovered mid-Task-6. Numbered 5.5 to keep Tasks 6–12 stable.
+
+**Files:**
+- Create: `packages/rules-tests/src/spike-eventseq.rules` (throwaway probe rules), `packages/rules-tests/src/spike-eventseq.test.ts`
+
+**Interfaces:**
+- Consumes: helpers from Task 4.
+- Produces: a passing/failing answer that gates Task 6. This test **stays in the suite** as a regression canary on the primitives.
+
+- [ ] **Step 1: Write the probe rules**
+
+`packages/rules-tests/src/spike-eventseq.rules` — isolates the primitives from all other logic:
+```
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /target/{id} {
+      allow get: if true;
+      // computed path segment, exactly the Task 6 shape
+      allow update: if existsAfter(/databases/$(database)/documents/probe/$('x' + string(request.resource.data.n)));
+    }
+    match /probe/{id} { allow read, write: if true; }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
+```
+
+- [ ] **Step 2: Write the spike test**
+
+`packages/rules-tests/src/spike-eventseq.test.ts`:
+```ts
+import { describe, it, beforeAll, afterAll, beforeEach, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
+import { doc, setDoc, updateDoc } from 'firebase/firestore';
+import type { RulesTestEnvironment } from '@firebase/rules-unit-testing';
+
+const here = dirname(fileURLToPath(import.meta.url));
+let env: RulesTestEnvironment;
+
+beforeAll(async () => {
+  // initializeTestEnvironment throws if the rules fail to COMPILE — that alone
+  // is the answer to "is a computed path segment valid interpolation?"
+  env = await initializeTestEnvironment({
+    projectId: 'money-kids-test',
+    firestore: { rules: readFileSync(resolve(here, 'spike-eventseq.rules'), 'utf8') },
+  });
+});
+afterAll(async () => { await env.cleanup(); });
+
+beforeEach(async () => {
+  await env.clearFirestore();
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, 'target/t1'), { n: 0 });
+    await setDoc(doc(db, 'probe/x1'), { hit: true }); // x1 exists, x2 does not
+  });
+});
+
+describe('computed path segments in existsAfter', () => {
+  it('compiles (proven by beforeAll not throwing) and resolves true for an existing target', async () => {
+    const db = env.authenticatedContext('u1').firestore();
+    await assertSucceeds(updateDoc(doc(db, 'target/t1'), { n: 1 }));
+  });
+
+  it('denies when the computed target is missing', async () => {
+    const db = env.authenticatedContext('u1').firestore();
+    await assertFails(updateDoc(doc(db, 'target/t1'), { n: 2 }));
+  });
+
+  it('documents that a missing existsAfter target denies via EVALUATION ERROR, not clean false', async () => {
+    // This is why Task 6's negative tests must be paired with positive ones: a
+    // denial is indistinguishable from a broken rule expression. Asserted here
+    // once, so the paired-assertion discipline in Task 6 has a stated reason.
+    const db = env.authenticatedContext('u1').firestore();
+    const err = await updateDoc(doc(db, 'target/t1'), { n: 2 }).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/evaluation error|PERMISSION_DENIED/i);
+  });
+});
+```
+
+- [ ] **Step 3: Run the spike**
+
+Run: `npm run test:rules`
+Expected: all three PASS. **Expected outcome is confirmation** — this design was verified against the emulator (firebase-tools + `@firebase/rules-unit-testing` v3, Firestore emulator) before the plan was finalized.
+
+**If Step 3 fails**, stop and report before touching Task 6:
+- *Compile failure in `beforeAll`* → computed segments are unsupported by this toolchain version. Fall back to a required `lastEventId` string field on the invoice (set to `'e' + eventCount`, validated on both the invoice and event rules, giving `existsAfter` a non-computed path via `$(newInv().lastEventId)`). Do **not** fall back to dropping event enforcement.
+- *The "existing target" case denies* → `existsAfter` is not resolving in-batch; the transition+event pairing must then move server-side into a callable, which is a spec-level change (the spec currently has kids transitioning invoices client-side under rules) — escalate rather than improvise.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add packages/rules-tests
+git commit -m "test(rules): spike proving computed-path existsAfter executes for event sequencing"
 ```
 
 ---
@@ -863,6 +1124,14 @@ describe('invoice lifecycle', () => {
     await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, approvedAmount: 5000 }));
     await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, deductions: [] }));
     await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, eventCount: 3 }));
+  });
+
+  it('caps photos per invoice at 8 on create and on edit', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    const paths = (n: number) => Array.from({ length: n }, (_, i) => `families/fam1/kids/k1/invoices/inv1/p${i}.png`);
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, photoPaths: paths(9) }));
+    await assertSucceeds(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, photoPaths: paths(8) }));
+    await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { photoPaths: paths(9) }));
   });
 
   it('kid sends draft with a matching event; send without an event fails', async () => {
@@ -980,6 +1249,11 @@ Add inside `match /families/{familyId} { ... }` (after the `kids` block):
         function inv() { return resource.data; }
         function newInv() { return request.resource.data; }
         function isOwnerKid() { return isFamilyKid() && inv().kidId == authKidId(); }
+        // photo count is capped here, not in storage.rules: the array lives in
+        // Firestore and Storage rules cannot count objects under a prefix
+        function photosWithinCap() {
+          return newInv().photoPaths is list && newInv().photoPaths.size() <= 8;
+        }
         function transitionHasEvent() {
           // every transition increments eventCount and the same batch must
           // create the deterministic event doc e{newEventCount}
@@ -995,7 +1269,8 @@ Add inside `match /families/{familyId} { ... }` (after the `kids` block):
           && newInv().kidId == authKidId()
           && newInv().status == 'draft'
           && newInv().eventCount == 0
-          && newInv().requestedAmount is int && newInv().requestedAmount > 0;
+          && newInv().requestedAmount is int && newInv().requestedAmount > 0
+          && photosWithinCap();
 
         // kid edits in place (no transition); activityId editable only in draft
         allow update: if isOwnerKid()
@@ -1005,7 +1280,8 @@ Add inside `match /families/{familyId} { ... }` (after the `kids` block):
                inv().status == 'draft'
                  ? ['description', 'photoPaths', 'requestedAmount', 'activityId']
                  : ['description', 'photoPaths', 'requestedAmount'])
-          && newInv().requestedAmount is int && newInv().requestedAmount > 0;
+          && newInv().requestedAmount is int && newInv().requestedAmount > 0
+          && photosWithinCap();
 
         // kid transition to sent (event required)
         allow update: if isOwnerKid()
@@ -1016,6 +1292,7 @@ Add inside `match /families/{familyId} { ... }` (after the `kids` block):
                  ? ['status', 'eventCount', 'description', 'photoPaths', 'requestedAmount', 'activityId']
                  : ['status', 'eventCount', 'description', 'photoPaths', 'requestedAmount'])
           && newInv().requestedAmount is int && newInv().requestedAmount > 0
+          && photosWithinCap()
           && transitionHasEvent();
 
         // parent returns (event required)
@@ -1061,7 +1338,12 @@ Add inside `match /families/{familyId} { ... }` (after the `kids` block):
       }
 ```
 
-**Implementation note:** the deterministic event ID (`e{eventCount}`) is what lets the invoice rule reference the event doc via `existsAfter` — this closes both gaps: an event-less transition fails (`existsAfter` misses) and a fabricated standalone event fails (`from == invBefore().status` equals `to == invAfter().status` when the invoice didn't change, and `from != to` is required; the deterministic ID also collides with the already-existing previous event). If the emulator rejects the computed path segment syntax `$('e' + string(...))`, the fallback is a required string field `lastEventId` on the invoice set to `'e' + eventCount`, validated on both sides — do not fall back to dropping event enforcement. Flag whichever variant shipped in the completion report.
+**Implementation note:** the deterministic event ID (`e{eventCount}`) is what lets the invoice rule reference the event doc via `existsAfter` — this closes both gaps: an event-less transition fails (`existsAfter` misses) and a fabricated standalone event fails (`from == invBefore().status` equals `to == invAfter().status` when the invoice didn't change, and `from != to` is required; the deterministic ID also collides with the already-existing previous event).
+
+**This design is emulator-verified — see Task 5.5, which must pass before this task starts.** Two findings from that spike govern the implementation:
+
+1. **Computed path segments are valid rules interpolation.** `existsAfter(.../events/$('e' + string(newInv().eventCount)))` compiles and resolves correctly (it returned `true` for an existing target). There is no `lastEventId` fallback and no reason to weaken event enforcement; if a future toolchain change breaks this, Task 5.5 fails first and loudly.
+2. **`existsAfter` on a *missing* document raises a rules evaluation error rather than returning a clean `false`.** This is not specific to computed paths — a hardcoded literal path to a missing doc behaves identically. The write is still denied (rules fail closed), so the invariant holds, but it means **a denial alone does not prove the rule works**: an unrelated typo in the same `allow` expression produces the same `PERMISSION_DENIED`. Every negative test in this task is therefore paired with the corresponding positive case (`sendBatch` succeeding), which is the only assertion that proves `existsAfter` actually resolved `true` rather than the whole rule being broken. Do not "simplify" the positive assertions away.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1211,6 +1493,8 @@ beforeEach(async () => {
     await setDoc(doc(db, 'families/fam1/members/p1'), { role: 'parent', displayName: 'Leo' });
     await setDoc(doc(db, 'families/fam1/invoices/inv1'), { kidId: 'k1', status: 'draft', requestedAmount: 100, description: '', photoPaths: [] });
     await setDoc(doc(db, 'families/fam1/invoices/inv2'), { kidId: 'k1', status: 'approved', requestedAmount: 100, description: '', photoPaths: [] });
+    // sibling k2's editable invoice — used to prove path/owner binding
+    await setDoc(doc(db, 'families/fam1/invoices/inv3'), { kidId: 'k2', status: 'draft', requestedAmount: 100, description: '', photoPaths: [] });
   });
 });
 
@@ -1230,6 +1514,13 @@ describe('photo storage', () => {
     const owner = kidCtx(env, 'fam1', 'k1').storage();
     await assertSucceeds(uploadBytes(ref(owner, path('k1', 'inv1')), png, { contentType: 'image/png' }));
     await assertSucceeds(getBytes(ref(parentCtx(env, 'p1').storage(), path('k1', 'inv1'))));
+  });
+  it('rejects a kid attaching a SIBLING\'s invoice under their own prefix', async () => {
+    // inv3 belongs to k2 and is editable; k1 writes it under k1's own path,
+    // so every owner check on the path segment passes — only the invoice's
+    // own kidId stops this. Regression guard for the storage ownership bug.
+    const storage = kidCtx(env, 'fam1', 'k1').storage();
+    await assertFails(uploadBytes(ref(storage, path('k1', 'inv3')), png, { contentType: 'image/png' }));
   });
   it('rejects uploads to approved invoices and non-image content', async () => {
     const storage = kidCtx(env, 'fam1', 'k1').storage();
@@ -1264,14 +1555,17 @@ service firebase.storage {
           && request.auth.token.familyId == familyId
           && request.auth.token.kidId == kidId;
       }
-      function invoiceEditable() {
-        return firestore.get(/databases/(default)/documents/families/$(familyId)/invoices/$(invoiceId))
-          .data.status in ['draft', 'returned', 'countered'];
+      // status alone is not enough: without the kidId check a kid could write
+      // under their OWN prefix using a SIBLING's editable invoiceId, since the
+      // {kidId} path segment is attacker-chosen. Both facts come from one get().
+      function invoiceWritable() {
+        let inv = firestore.get(/databases/(default)/documents/families/$(familyId)/invoices/$(invoiceId)).data;
+        return inv.status in ['draft', 'returned', 'countered'] && inv.kidId == kidId;
       }
 
       allow read: if isFamilyParent() || isOwnerKid();
       allow write: if (isFamilyParent() || isOwnerKid())
-        && invoiceEditable()
+        && invoiceWritable()
         && (request.resource == null
             || (request.resource.size <= 5 * 1024 * 1024
                 && request.resource.contentType.matches('image/.*')));
@@ -1328,7 +1622,8 @@ git commit -m "feat(rules): storage photo isolation with sibling privacy and ima
   "engines": { "node": "20" },
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.js --external:firebase-admin --external:firebase-functions --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@money-kids/shared": "*",
@@ -1392,7 +1687,15 @@ beforeEach(async () => {
   await db.doc('families/fam1').set({ name: 'T', language: 'es', currency: 'COP', createdBy: 'p1', deductionRules: [] });
   await db.doc('families/fam1/members/p1').set({ role: 'parent', displayName: 'Leo' });
   await db.doc('families/fam1/kids/k1').set({ name: 'Mia', birthYear: 2016, deductionsEnabled: false, spendableBalance: 0, savingsBalance: 0 });
+  // a SECOND, real family — 'stranger' proves only the membership check;
+  // family scoping needs an actual member of another family
+  await db.recursiveDelete(db.collection('families').doc('fam2'));
+  await db.doc('families/fam2').set({ name: 'Other', language: 'en', currency: 'USD', createdBy: 'p2', deductionRules: [] });
+  await db.doc('families/fam2/members/p2').set({ role: 'parent', displayName: 'Ana' });
+  await db.doc('families/fam2/kids/k9').set({ name: 'Otro', birthYear: 2015, deductionsEnabled: false, spendableBalance: 0, savingsBalance: 0 });
 });
+
+const foreignParentAuth = { uid: 'p2', token: {} } as never; // real parent of fam2
 
 describe('createJoinCodeCore', () => {
   it('parent gets a code stored with the right target', async () => {
@@ -1411,6 +1714,24 @@ describe('createJoinCodeCore', () => {
     await db.doc('families/fam1/members/aunt').set({ role: 'viewer', displayName: 'Tía' });
     await expect(createJoinCodeCore(db, { uid: 'aunt', token: {} } as never, { familyId: 'fam1', kidId: 'k1' })).rejects.toThrow(/parent role/i);
   });
+  it('rejects a real parent of another family targeting this family', async () => {
+    await expect(createJoinCodeCore(db, foreignParentAuth, { familyId: 'fam1', kidId: 'k1' }))
+      .rejects.toThrow(/not a member/i);
+    // ...and cannot reach across to a kid of their own family from fam1's scope
+    await expect(createJoinCodeCore(db, foreignParentAuth, { familyId: 'fam1', kidId: 'k9' }))
+      .rejects.toThrow(/not a member/i);
+    // the mirror direction: fam1's parent cannot target fam2
+    await expect(createJoinCodeCore(db, parentAuth, { familyId: 'fam2', kidId: 'k9' }))
+      .rejects.toThrow(/not a member/i);
+  });
+  it('rejects malformed ids before they reach a document path', async () => {
+    await expect(createJoinCodeCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1/../k9' }))
+      .rejects.toThrow(/kidId/);
+    await expect(createJoinCodeCore(db, parentAuth, { familyId: 'fam1/members/p1', kidId: 'k1' }))
+      .rejects.toThrow(/familyId/);
+    await expect(createJoinCodeCore(db, parentAuth, { familyId: '', kidId: 'k1' }))
+      .rejects.toThrow(/familyId/);
+  });
 });
 
 describe('mintKidTokenCore', () => {
@@ -1421,13 +1742,19 @@ describe('mintKidTokenCore', () => {
     expect(token.length).toBeGreaterThan(20);
   });
   it('rejects unknown, revoked, and expired codes', async () => {
-    await expect(mintKidTokenCore(db, adminAuth, { code: 'NOPE99' })).rejects.toThrow(/invalid/i);
+    await expect(mintKidTokenCore(db, adminAuth, { code: 'NOPE9999' })).rejects.toThrow(/invalid/i);
     const { code } = await createJoinCodeCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1' });
     await db.doc(`joinCodes/${code}`).update({ revoked: true });
     await expect(mintKidTokenCore(db, adminAuth, { code })).rejects.toThrow(/invalid/i);
     const { code: code2 } = await createJoinCodeCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1' });
     await db.doc(`joinCodes/${code2}`).update({ expiresAt: new Date(Date.now() - 1000) });
     await expect(mintKidTokenCore(db, adminAuth, { code: code2 })).rejects.toThrow(/invalid/i);
+  });
+  it('rejects malformed codes as plain invalid, leaking nothing', async () => {
+    // public callable: a malformed code must be indistinguishable from a wrong one
+    for (const bad of ['', 'abc', 'abcd2345', 'ABCD/../X', 'ABCD23450', 'ABCD2340']) {
+      await expect(mintKidTokenCore(db, adminAuth, { code: bad })).rejects.toThrow(/invalid/i);
+    }
   });
 });
 
@@ -1441,6 +1768,12 @@ describe('revokeKidAccessCore', () => {
   });
   it('rejects non-parent callers', async () => {
     await expect(revokeKidAccessCore(db, adminAuth, kidAuth, { familyId: 'fam1', kidId: 'k1' })).rejects.toThrow();
+  });
+  it('rejects a real parent of another family, and malformed ids', async () => {
+    await expect(revokeKidAccessCore(db, adminAuth, foreignParentAuth, { familyId: 'fam1', kidId: 'k1' }))
+      .rejects.toThrow(/not a member/i);
+    await expect(revokeKidAccessCore(db, adminAuth, parentAuth, { familyId: 'fam1', kidId: '../k9' }))
+      .rejects.toThrow(/kidId/);
   });
 });
 ```
@@ -1460,6 +1793,19 @@ import type { Firestore } from 'firebase-admin/firestore';
 export interface CallerAuth {
   uid: string;
   token: { role?: string; familyId?: string; kidId?: string };
+}
+
+/**
+ * Runs shared validators (which throw plain Errors) and rethrows as a callable
+ * `invalid-argument`. Every callable validates its payload BEFORE using any
+ * field in a document path — authorization is not validation.
+ */
+export function checked<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (e) {
+    throw new HttpsError('invalid-argument', (e as Error).message);
+  }
 }
 
 export async function assertParentCaller(
@@ -1489,7 +1835,8 @@ import { randomBytes } from 'node:crypto';
 import { HttpsError } from 'firebase-functions/v2/https';
 import { Timestamp, type Firestore } from 'firebase-admin/firestore';
 import type { Auth } from 'firebase-admin/auth';
-import { assertParentCaller, type CallerAuth } from './auth.js';
+import { validateId, validateJoinCode } from '@money-kids/shared';
+import { checked, assertParentCaller, type CallerAuth } from './auth.js';
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const CODE_TTL_MS = 48 * 60 * 60 * 1000;
@@ -1504,6 +1851,10 @@ export async function createJoinCodeCore(
   auth: CallerAuth | undefined,
   data: { familyId: string; kidId: string },
 ): Promise<{ code: string }> {
+  checked(() => {
+    validateId(data.familyId, 'familyId');
+    validateId(data.kidId, 'kidId');
+  });
   await assertParentCaller(db, data.familyId, auth);
   const kid = await db.doc(`families/${data.familyId}/kids/${data.kidId}`).get();
   if (!kid.exists) throw new HttpsError('not-found', 'kid not found in this family');
@@ -1523,8 +1874,16 @@ export async function mintKidTokenCore(
   adminAuth: Auth,
   data: { code: string },
 ): Promise<{ token: string }> {
-  const snap = await db.doc(`joinCodes/${data.code}`).get();
+  // this callable is public/unauthenticated — the code is the only credential,
+  // so its shape is validated before it reaches a document path
   const invalid = new HttpsError('permission-denied', 'invalid or expired code');
+  let code: string;
+  try {
+    code = validateJoinCode(data.code);
+  } catch {
+    throw invalid; // never leak whether a malformed code could have existed
+  }
+  const snap = await db.doc(`joinCodes/${code}`).get();
   if (!snap.exists) throw invalid;
   const { familyId, kidId, revoked, expiresAt } = snap.data() as {
     familyId: string; kidId: string; revoked: boolean; expiresAt: Timestamp;
@@ -1541,6 +1900,10 @@ export async function revokeKidAccessCore(
   auth: CallerAuth | undefined,
   data: { familyId: string; kidId: string },
 ): Promise<void> {
+  checked(() => {
+    validateId(data.familyId, 'familyId');
+    validateId(data.kidId, 'kidId');
+  });
   await assertParentCaller(db, data.familyId, auth);
   const kid = await db.doc(`families/${data.familyId}/kids/${data.kidId}`).get();
   if (!kid.exists) throw new HttpsError('not-found', 'kid not found in this family');
@@ -1684,9 +2047,44 @@ describe('approveInvoiceCore', () => {
     expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(7000);
   });
 
-  it('rejects kid callers, non-members, and cross-family targets', async () => {
+  it('rejects kid callers and unaffiliated strangers', async () => {
     await expect(approveInvoiceCore(db, kidAuth, { familyId: 'fam1', invoiceId: 'inv1' })).rejects.toThrow();
     await expect(approveInvoiceCore(db, { uid: 'stranger', token: {} } as never, { familyId: 'fam1', invoiceId: 'inv1' })).rejects.toThrow();
+  });
+
+  it('rejects a real parent of ANOTHER family, in both directions, with no money moved', async () => {
+    // a stranger uid only proves the membership lookup; family scoping needs a
+    // caller who genuinely passes the parent-role check in their own family
+    await db.doc('families/fam2').set({ name: 'Other', language: 'en', currency: 'USD', createdBy: 'p2', deductionRules: [] });
+    await db.doc('families/fam2/members/p2').set({ role: 'parent', displayName: 'Ana' });
+    await db.doc('families/fam2/kids/k9').set({ name: 'Otro', birthYear: 2015, deductionsEnabled: false, spendableBalance: 0, savingsBalance: 0 });
+    await db.doc('families/fam2/invoices/inv9').set({
+      kidId: 'k9', activityId: null, description: 'suyo', photoPaths: [],
+      status: 'sent', requestedAmount: 4000, eventCount: 1,
+    });
+
+    // fam2's parent cannot approve fam1's invoice
+    await expect(approveInvoiceCore(db, { uid: 'p2', token: {} } as never, { familyId: 'fam1', invoiceId: 'inv1' }))
+      .rejects.toThrow(/not a member/i);
+    // fam1's parent cannot approve fam2's invoice
+    await expect(approveInvoiceCore(db, parentAuth, { familyId: 'fam2', invoiceId: 'inv9' }))
+      .rejects.toThrow(/not a member/i);
+    // an invoice id from the OTHER family, passed under the caller's own familyId,
+    // must not resolve — invoices are addressed within the family subtree
+    await expect(approveInvoiceCore(db, parentAuth, { familyId: 'fam1', invoiceId: 'inv9' }))
+      .rejects.toThrow(/not found/i);
+
+    // nothing was credited anywhere
+    expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(0);
+    expect((await db.doc('families/fam2/kids/k9').get()).get('spendableBalance')).toBe(0);
+    await db.recursiveDelete(db.collection('families').doc('fam2'));
+  });
+
+  it('rejects malformed ids before they reach a document path', async () => {
+    await expect(approveInvoiceCore(db, parentAuth, { familyId: 'fam1', invoiceId: 'inv1/../inv2' }))
+      .rejects.toThrow(/invoiceId/);
+    await expect(approveInvoiceCore(db, parentAuth, { familyId: '..', invoiceId: 'inv1' }))
+      .rejects.toThrow(/familyId/);
   });
 
   it('rejects approving a one-time activity twice for the same kid', async () => {
@@ -1717,8 +2115,8 @@ Expected: FAIL — `approval.js` not found.
 ```ts
 import { HttpsError } from 'firebase-functions/v2/https';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { computeDeductions, type DeductionRule } from '@money-kids/shared';
-import { assertParentCaller, type CallerAuth } from './auth.js';
+import { computeDeductions, validateId, type DeductionRule } from '@money-kids/shared';
+import { checked, assertParentCaller, type CallerAuth } from './auth.js';
 
 export async function approveInTransaction(
   db: Firestore,
@@ -1797,6 +2195,10 @@ export async function approveInvoiceCore(
   auth: CallerAuth | undefined,
   data: { familyId: string; invoiceId: string },
 ): Promise<{ approvedAmount: number; netAmount: number }> {
+  checked(() => {
+    validateId(data.familyId, 'familyId');
+    validateId(data.invoiceId, 'invoiceId');
+  });
   await assertParentCaller(db, data.familyId, auth);
   const inv = await db.doc(`families/${data.familyId}/invoices/${data.invoiceId}`).get();
   if (!inv.exists) throw new HttpsError('not-found', 'invoice not found');
@@ -1906,6 +2308,21 @@ describe('acceptCounterOfferCore', () => {
     await db.doc('families/fam1/invoices/inv1').update({ status: 'sent' });
     await expect(acceptCounterOfferCore(db, kidAuth, { familyId: 'fam1', invoiceId: 'inv1' })).rejects.toThrow(/cannot approve/i);
   });
+  it('rejects a kid of another family holding a valid kid token', async () => {
+    // claims are well-formed and role is 'kid', but for fam2 — the familyId in
+    // the claim must match the target family, not merely be present
+    const foreignKidAuth = { uid: 'kid_fam2_k9', token: { role: 'kid', familyId: 'fam2', kidId: 'k9' } } as never;
+    await expect(acceptCounterOfferCore(db, foreignKidAuth, { familyId: 'fam1', invoiceId: 'inv1' }))
+      .rejects.toThrow(/kid session for this family/i);
+    // and a fam1 kid cannot reach into fam2
+    await expect(acceptCounterOfferCore(db, kidAuth, { familyId: 'fam2', invoiceId: 'inv1' }))
+      .rejects.toThrow(/kid session for this family/i);
+    expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(0);
+  });
+  it('rejects malformed ids before they reach a document path', async () => {
+    await expect(acceptCounterOfferCore(db, kidAuth, { familyId: 'fam1', invoiceId: '../../fam2/invoices/inv9' }))
+      .rejects.toThrow(/invoiceId/);
+  });
 });
 ```
 
@@ -1920,14 +2337,19 @@ Expected: FAIL — module not found.
 ```ts
 import { HttpsError } from 'firebase-functions/v2/https';
 import type { Firestore } from 'firebase-admin/firestore';
+import { validateId } from '@money-kids/shared';
 import { approveInTransaction } from './approval.js';
-import { assertKidCaller, type CallerAuth } from './auth.js';
+import { checked, assertKidCaller, type CallerAuth } from './auth.js';
 
 export async function acceptCounterOfferCore(
   db: Firestore,
   auth: CallerAuth | undefined,
   data: { familyId: string; invoiceId: string },
 ): Promise<{ approvedAmount: number; netAmount: number }> {
+  checked(() => {
+    validateId(data.familyId, 'familyId');
+    validateId(data.invoiceId, 'invoiceId');
+  });
   const kidId = assertKidCaller(data.familyId, auth);
   const inv = await db.doc(`families/${data.familyId}/invoices/${data.invoiceId}`).get();
   if (!inv.exists) throw new HttpsError('not-found', 'invoice not found');
@@ -2006,32 +2428,56 @@ beforeEach(async () => {
 
 describe('recordPayoutCore', () => {
   it('debits the chosen balance and writes an idempotent ledger entry', async () => {
-    await recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 3000, note: 'efectivo', requestId: 'r1' });
+    await recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 3000, note: 'efectivo', requestId: 'req-0001' });
     expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(4000);
-    const entry = await db.doc('families/fam1/ledger/payout_r1').get();
+    const entry = await db.doc('families/fam1/ledger/payout_req-0001').get();
     expect(entry.get('type')).toBe('payout');
     expect(entry.get('balance')).toBe('spendable');
     expect(entry.get('amount')).toBe(3000);
     // retry with same requestId + identical payload: idempotent success, no double debit
-    await recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 3000, note: 'efectivo', requestId: 'r1' });
+    await recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 3000, note: 'efectivo', requestId: 'req-0001' });
     expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(4000);
     // same requestId with a different payload: rejected, still no double debit
-    await expect(recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 100, note: 'efectivo', requestId: 'r1' })).rejects.toThrow(/mismatch/i);
+    await expect(recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 100, note: 'efectivo', requestId: 'req-0001' })).rejects.toThrow(/mismatch/i);
     // same payload but a DIFFERENT parent: also rejected (not their payout)
     await db.doc('families/fam1/members/p2').set({ role: 'parent', displayName: 'Ana' });
-    await expect(recordPayoutCore(db, { uid: 'p2', token: {} } as never, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 3000, note: 'efectivo', requestId: 'r1' })).rejects.toThrow(/mismatch/i);
+    await expect(recordPayoutCore(db, { uid: 'p2', token: {} } as never, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 3000, note: 'efectivo', requestId: 'req-0001' })).rejects.toThrow(/mismatch/i);
     expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(4000);
   });
   it('savings payouts debit savings', async () => {
-    await recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'savings', amount: 2000, note: '', requestId: 'r2' });
+    await recordPayoutCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1', balance: 'savings', amount: 2000, note: '', requestId: 'req-0002' });
     expect((await db.doc('families/fam1/kids/k1').get()).get('savingsBalance')).toBe(0);
   });
   it('rejects zero, negative, over-balance, and kid callers', async () => {
-    const base = { familyId: 'fam1', kidId: 'k1', balance: 'spendable' as const, note: '', requestId: 'r3' };
+    const base = { familyId: 'fam1', kidId: 'k1', balance: 'spendable' as const, note: '', requestId: 'req-0003' };
     await expect(recordPayoutCore(db, parentAuth, { ...base, amount: 0 })).rejects.toThrow(/amount/i);
     await expect(recordPayoutCore(db, parentAuth, { ...base, amount: -5 })).rejects.toThrow(/amount/i);
     await expect(recordPayoutCore(db, parentAuth, { ...base, amount: 7001 })).rejects.toThrow(/exceeds/i);
     await expect(recordPayoutCore(db, kidAuth, { ...base, amount: 100 })).rejects.toThrow();
+  });
+
+  it('rejects a real parent of another family, with no debit', async () => {
+    await db.doc('families/fam2').set({ name: 'Other', language: 'en', currency: 'USD', createdBy: 'p2', deductionRules: [] });
+    await db.doc('families/fam2/members/p2').set({ role: 'parent', displayName: 'Ana' });
+    const foreign = { uid: 'p2', token: {} } as never;
+    await expect(recordPayoutCore(db, foreign, { familyId: 'fam1', kidId: 'k1', balance: 'spendable', amount: 1000, note: '', requestId: 'req-0004' }))
+      .rejects.toThrow(/not a member/i);
+    expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(7000);
+    await db.recursiveDelete(db.collection('families').doc('fam2'));
+  });
+
+  it('rejects malformed payloads before any path or ledger ID is built', async () => {
+    const base = { familyId: 'fam1', kidId: 'k1', balance: 'spendable' as const, note: '', amount: 100 };
+    // requestId becomes part of the ledger doc ID — must not carry separators.
+    // (Note it CAN legitimately contain '_': the 'payout_' prefix keeps
+    // 'payout_credit_inv1' a distinct doc from 'credit_inv1', so only path
+    // separators and out-of-range lengths are rejected.)
+    await expect(recordPayoutCore(db, parentAuth, { ...base, requestId: 'r1' })).rejects.toThrow(/requestId/);
+    await expect(recordPayoutCore(db, parentAuth, { ...base, requestId: '../credit_inv1' })).rejects.toThrow(/requestId/);
+    await expect(recordPayoutCore(db, parentAuth, { ...base, requestId: 'req-0005', kidId: 'k1/../k2' })).rejects.toThrow(/kidId/);
+    await expect(recordPayoutCore(db, parentAuth, { ...base, requestId: 'req-0005', balance: 'pocket' as never })).rejects.toThrow(/balance/);
+    await expect(recordPayoutCore(db, parentAuth, { ...base, requestId: 'req-0005', note: 'x'.repeat(501) })).rejects.toThrow(/note/);
+    expect((await db.doc('families/fam1/kids/k1').get()).get('spendableBalance')).toBe(7000);
   });
 });
 ```
@@ -2074,6 +2520,18 @@ describe('setDeductionRulesCore', () => {
     })).rejects.toThrow(/exceed/i);
     await expect(setDeductionRulesCore(db, { uid: 'stranger', token: {} } as never, { familyId: 'fam1', rules: [] })).rejects.toThrow();
   });
+  it('rejects a real parent of another family and malformed familyId', async () => {
+    await db.doc('families/fam2').set({ name: 'Other', language: 'en', currency: 'USD', createdBy: 'p2', deductionRules: [] });
+    await db.doc('families/fam2/members/p2').set({ role: 'parent', displayName: 'Ana' });
+    await expect(setDeductionRulesCore(db, { uid: 'p2', token: {} } as never, {
+      familyId: 'fam1',
+      rules: [{ nameEs: 'Ahorro', nameEn: 'Savings', basisPoints: 9000, destination: 'savings' }],
+    })).rejects.toThrow(/not a member/i);
+    expect((await db.doc('families/fam1').get()).get('deductionRules')).toEqual([]);
+    await expect(setDeductionRulesCore(db, parentAuth, { familyId: 'fam1/../fam2', rules: [] }))
+      .rejects.toThrow(/familyId/);
+    await db.recursiveDelete(db.collection('families').doc('fam2'));
+  });
 });
 ```
 
@@ -2088,7 +2546,8 @@ Expected: FAIL — modules not found.
 ```ts
 import { HttpsError } from 'firebase-functions/v2/https';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { assertParentCaller, type CallerAuth } from './auth.js';
+import { validateId, validateRequestId, validateNote, validateBalance } from '@money-kids/shared';
+import { checked, assertParentCaller, type CallerAuth } from './auth.js';
 
 export async function recordPayoutCore(
   db: Firestore,
@@ -2098,12 +2557,18 @@ export async function recordPayoutCore(
     amount: number; note: string; requestId: string;
   },
 ): Promise<void> {
+  // requestId is the highest-risk field here: it becomes part of the ledger
+  // document ID, so an unvalidated value could target another ledger entry
+  checked(() => {
+    validateId(data.familyId, 'familyId');
+    validateId(data.kidId, 'kidId');
+    validateRequestId(data.requestId);
+    validateNote(data.note);
+    validateBalance(data.balance);
+  });
   await assertParentCaller(db, data.familyId, auth);
   if (!Number.isInteger(data.amount) || data.amount <= 0) {
     throw new HttpsError('invalid-argument', 'amount must be a positive integer');
-  }
-  if (data.balance !== 'spendable' && data.balance !== 'savings') {
-    throw new HttpsError('invalid-argument', 'balance must be spendable or savings');
   }
   await db.runTransaction(async (tx) => {
     const payoutRef = db.doc(`families/${data.familyId}/ledger/payout_${data.requestId}`);
@@ -2141,14 +2606,15 @@ export async function recordPayoutCore(
 ```ts
 import { HttpsError } from 'firebase-functions/v2/https';
 import type { Firestore } from 'firebase-admin/firestore';
-import { validateDeductionRules, type DeductionRule } from '@money-kids/shared';
-import { assertParentCaller, type CallerAuth } from './auth.js';
+import { validateDeductionRules, validateId, type DeductionRule } from '@money-kids/shared';
+import { checked, assertParentCaller, type CallerAuth } from './auth.js';
 
 export async function setDeductionRulesCore(
   db: Firestore,
   auth: CallerAuth | undefined,
   data: { familyId: string; rules: DeductionRule[] },
 ): Promise<void> {
+  checked(() => validateId(data.familyId, 'familyId'));
   await assertParentCaller(db, data.familyId, auth);
   try {
     validateDeductionRules(data.rules);
@@ -2173,8 +2639,8 @@ export const setDeductionRules = onCall(async (req) =>
 
 - [ ] **Step 4: Run all test suites**
 
-Run: `npm test -w @money-kids/shared && npm run test:rules && npm run test:functions`
-Expected: everything PASSES. Also `npm run build -w @money-kids/functions` succeeds.
+Run: `npm run typecheck && npm test -w @money-kids/shared && npm run test:rules && npm run test:functions`
+Expected: everything PASSES, with no type errors in any workspace. Also `npm run build -w @money-kids/functions` succeeds.
 
 - [ ] **Step 5: Commit**
 
