@@ -1,6 +1,34 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    match /families/{familyId}/kids/{kidId}/invoices/{invoiceId}/{fileName} {
+      function isKidToken() {
+        return request.auth != null && request.auth.token.get('role', '') == 'kid';
+      }
+      function isFamilyParent() {
+        return request.auth != null && !isKidToken()
+          && firestore.exists(/databases/(default)/documents/families/$(familyId)/members/$(request.auth.uid));
+      }
+      function isOwnerKid() {
+        return isKidToken()
+          && request.auth.token.familyId == familyId
+          && request.auth.token.kidId == kidId;
+      }
+      // status alone is not enough: without the kidId check a kid could write
+      // under their OWN prefix using a SIBLING's editable invoiceId, since the
+      // {kidId} path segment is attacker-chosen. Both facts come from one get().
+      function invoiceWritable() {
+        let inv = firestore.get(/databases/(default)/documents/families/$(familyId)/invoices/$(invoiceId)).data;
+        return inv.status in ['draft', 'returned', 'countered'] && inv.kidId == kidId;
+      }
+
+      allow read: if isFamilyParent() || isOwnerKid();
+      allow write: if (isFamilyParent() || isOwnerKid())
+        && invoiceWritable()
+        && (request.resource == null
+            || (request.resource.size <= 5 * 1024 * 1024
+                && request.resource.contentType.matches('image/.*')));
+    }
     match /{allPaths=**} {
       allow read, write: if false;
     }
