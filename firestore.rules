@@ -16,10 +16,14 @@ service cloud.firestore {
       function authKidId() { return request.auth.token.kidId; }
 
       allow get: if isFamilyParent() || isFamilyKid();
+      // the founder's member doc must be created in the same batch: a family
+      // whose only parent is absent from members/ is permanently unreachable,
+      // since every other rule authorizes through membership
       allow create: if signedIn() && !isKidToken()
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.deductionRules == []
-        && request.resource.data.currency is string;
+        && request.resource.data.currency is string
+        && existsAfter(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid));
       allow update: if isFamilyParent()
         && !request.resource.data.diff(resource.data).affectedKeys()
              .hasAny(['currency', 'createdBy', 'deductionRules']);

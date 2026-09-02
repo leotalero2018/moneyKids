@@ -45,6 +45,20 @@ describe('family creation and immutability', () => {
     batch.set(doc(db, 'families/fam9/members/p9'), { role: 'parent', displayName: 'P9' });
     await assertSucceeds(batch.commit());
   });
+  it('rejects a family created without the founder member doc (unreachable family)', async () => {
+    const db = parentCtx(env, 'p9').firestore();
+    // no member doc in the batch → family would be authorizable by nobody
+    await assertFails(setDoc(doc(db, 'families/fam10'), {
+      name: 'Orphan', language: 'en', currency: 'USD', createdBy: 'p9', deductionRules: [],
+    }));
+    // and a member doc for someone *else* does not satisfy it either
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'families/fam11'), {
+      name: 'Orphan2', language: 'en', currency: 'USD', createdBy: 'p9', deductionRules: [],
+    });
+    batch.set(doc(db, 'families/fam11/members/pOther'), { role: 'parent', displayName: 'Other' });
+    await assertFails(batch.commit());
+  });
   it('kid tokens cannot create families', async () => {
     const db = kidCtx(env, 'fam1', 'k1').firestore();
     await assertFails(setDoc(doc(db, 'families/fam8'), {
