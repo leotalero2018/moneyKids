@@ -51,6 +51,31 @@ describe('activities', () => {
     await assertSucceeds(getDoc(doc(kdb, 'families/fam1/activities/act1')));
     await assertFails(updateDoc(doc(kdb, 'families/fam1/activities/act1'), { suggestedPrice: 999999 }));
   });
+
+  it('activity writes are field-whitelisted and type-checked', async () => {
+    const pdb = parentCtx(env, 'p1').firestore();
+    const valid = {
+      titleEs: 'Valentía', titleEn: 'Courage', descriptionEs: '', descriptionEn: '',
+      suggestedPrice: 3000, category: 'courage', repeatable: false, active: true,
+    };
+    await assertSucceeds(setDoc(doc(pdb, 'families/fam1/activities/ok'), valid));
+    // unknown keys cannot be smuggled onto the activity
+    await assertFails(setDoc(doc(pdb, 'families/fam1/activities/bad1'), { ...valid, injected: 'x' }));
+    // required keys must all be present
+    await assertFails(setDoc(doc(pdb, 'families/fam1/activities/bad2'), { titleEs: 'x', suggestedPrice: 10 }));
+    // types are enforced
+    await assertFails(setDoc(doc(pdb, 'families/fam1/activities/bad3'), { ...valid, titleEs: 42 }));
+    await assertFails(setDoc(doc(pdb, 'families/fam1/activities/bad4'), { ...valid, repeatable: 'yes' }));
+    await assertFails(setDoc(doc(pdb, 'families/fam1/activities/bad5'), { ...valid, active: 1 }));
+    // category is one of the four pillars
+    await assertFails(setDoc(doc(pdb, 'families/fam1/activities/bad6'), { ...valid, category: 'chores' }));
+    // free text is bounded
+    await assertFails(setDoc(doc(pdb, 'families/fam1/activities/bad7'), { ...valid, titleEs: 'x'.repeat(81) }));
+    await assertFails(setDoc(doc(pdb, 'families/fam1/activities/bad8'), { ...valid, descriptionEs: 'x'.repeat(501) }));
+    // and the same whitelist applies on update
+    await assertFails(updateDoc(doc(pdb, 'families/fam1/activities/ok'), { injected: 'x' }));
+    await assertSucceeds(updateDoc(doc(pdb, 'families/fam1/activities/ok'), { active: false }));
+  });
 });
 
 describe('invoice lifecycle', () => {
@@ -67,6 +92,74 @@ describe('invoice lifecycle', () => {
     await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, approvedAmount: 5000 }));
     await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, deductions: [] }));
     await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, eventCount: 3 }));
+  });
+
+  it('create requires every field and enforces types', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    // hasOnly permits omissions; hasAll is what makes a partial invoice impossible
+    const { description: _d, ...noDescription } = draft;
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/bad1'), noDescription));
+    const { photoPaths: _p, ...noPhotos } = draft;
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/bad2'), noPhotos));
+    // types are enforced on the free-text and list fields
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/bad3'), { ...draft, description: 42 }));
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/bad4'), { ...draft, photoPaths: 'p1.png' }));
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/bad5'), { ...draft, description: 'x'.repeat(1001) }));
+    // activityId is either null or a string, never an object
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/bad6'), { ...draft, activityId: { a: 1 } }));
+    // the positive path still works, proving the denials are specific
+    await assertSucceeds(setDoc(doc(kdb, 'families/fam1/invoices/good'), draft));
+  });
+
+  it('edits cannot exceed the description bound either', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
+    await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { description: 'x'.repeat(1001) }));
+    await assertSucceeds(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { description: 'corto' }));
+  });
+
+  it('counterOffer is a closed, bounded map', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
+    await sendBatch(kdb, 'inv1', 'draft', 5000, 1);
+    const pdb = parentCtx(env, 'p1').firestore();
+
+    const counter = (offer: Record<string, unknown>) => {
+      const batch = writeBatch(pdb);
+      batch.update(doc(pdb, 'families/fam1/invoices/inv1'), {
+        status: 'countered', eventCount: 2, counterOffer: offer,
+      });
+      batch.set(doc(pdb, 'families/fam1/invoices/inv1/events/e2'), {
+        from: 'sent', to: 'countered', actorUid: 'p1', at: serverTimestamp(), note: 'menos', kidId: 'k1',
+      });
+      return batch.commit();
+    };
+
+    // extra keys inside the map are rejected
+    await assertFails(counter({ amount: 3000, note: 'menos', parentId: 'p1', at: serverTimestamp(), secret: 'x' }));
+    // note must be a bounded string
+    await assertFails(counter({ amount: 3000, note: 'x'.repeat(501), parentId: 'p1', at: serverTimestamp() }));
+    await assertFails(counter({ amount: 3000, note: 42, parentId: 'p1', at: serverTimestamp() }));
+    // and the well-formed counter-offer succeeds, proving the denials are specific
+    await assertSucceeds(counter({ amount: 3000, note: 'menos', parentId: 'p1', at: serverTimestamp() }));
+  });
+
+  it('event notes are bounded', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);
+    await sendBatch(kdb, 'inv1', 'draft', 5000, 1);
+    const pdb = parentCtx(env, 'p1').firestore();
+    const ret = (note: unknown) => {
+      const batch = writeBatch(pdb);
+      batch.update(doc(pdb, 'families/fam1/invoices/inv1'), { status: 'returned', eventCount: 2 });
+      batch.set(doc(pdb, 'families/fam1/invoices/inv1/events/e2'), {
+        from: 'sent', to: 'returned', actorUid: 'p1', at: serverTimestamp(), note, kidId: 'k1',
+      });
+      return batch.commit();
+    };
+    await assertFails(ret('x'.repeat(501)));
+    await assertFails(ret(42));
+    await assertSucceeds(ret('explica un poco más'));
   });
 
   it('caps photos per invoice at 8 on create and on edit', async () => {
