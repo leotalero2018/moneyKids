@@ -69,6 +69,14 @@ describe('invoice lifecycle', () => {
     await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, eventCount: 3 }));
   });
 
+  it('caps photos per invoice at 8 on create and on edit', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    const paths = (n: number) => Array.from({ length: n }, (_, i) => `families/fam1/kids/k1/invoices/inv1/p${i}.png`);
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, photoPaths: paths(9) }));
+    await assertSucceeds(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), { ...draft, photoPaths: paths(8) }));
+    await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'), { photoPaths: paths(9) }));
+  });
+
   it('kid sends draft with a matching event; send without an event fails', async () => {
     const kdb = kidCtx(env, 'fam1', 'k1').firestore();
     await setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft);

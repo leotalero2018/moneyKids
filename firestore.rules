@@ -64,6 +64,11 @@ service cloud.firestore {
         function inv() { return resource.data; }
         function newInv() { return request.resource.data; }
         function isOwnerKid() { return isFamilyKid() && inv().kidId == authKidId(); }
+        // photo count is capped here, not in storage.rules: the array lives in
+        // Firestore and Storage rules cannot count objects under a prefix
+        function photosWithinCap() {
+          return newInv().photoPaths is list && newInv().photoPaths.size() <= 8;
+        }
         function transitionHasEvent() {
           // every transition increments eventCount and the same batch must
           // create the deterministic event doc e{newEventCount}
@@ -79,7 +84,8 @@ service cloud.firestore {
           && newInv().kidId == authKidId()
           && newInv().status == 'draft'
           && newInv().eventCount == 0
-          && newInv().requestedAmount is int && newInv().requestedAmount > 0;
+          && newInv().requestedAmount is int && newInv().requestedAmount > 0
+          && photosWithinCap();
 
         // kid edits in place (no transition); activityId editable only in draft
         allow update: if isOwnerKid()
@@ -89,7 +95,8 @@ service cloud.firestore {
                inv().status == 'draft'
                  ? ['description', 'photoPaths', 'requestedAmount', 'activityId']
                  : ['description', 'photoPaths', 'requestedAmount'])
-          && newInv().requestedAmount is int && newInv().requestedAmount > 0;
+          && newInv().requestedAmount is int && newInv().requestedAmount > 0
+          && photosWithinCap();
 
         // kid transition to sent (event required)
         allow update: if isOwnerKid()
@@ -100,6 +107,7 @@ service cloud.firestore {
                  ? ['status', 'eventCount', 'description', 'photoPaths', 'requestedAmount', 'activityId']
                  : ['status', 'eventCount', 'description', 'photoPaths', 'requestedAmount'])
           && newInv().requestedAmount is int && newInv().requestedAmount > 0
+          && photosWithinCap()
           && transitionHasEvent();
 
         // parent returns (event required)
