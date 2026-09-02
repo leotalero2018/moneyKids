@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   initializeTestEnvironment,
   type RulesTestEnvironment,
   type RulesTestContext,
 } from '@firebase/rules-unit-testing';
 
-const root = resolve(import.meta.dirname, '../../..');
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 export async function setupTestEnv(): Promise<RulesTestEnvironment> {
   return initializeTestEnvironment({

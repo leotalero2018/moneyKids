@@ -2,7 +2,7 @@
   "name": "money-kids",
   "private": true,
   "engines": {
-    "node": ">=20"
+    "node": ">=20.11"
   },
   "workspaces": [
     "packages/*",
@@ -10,7 +10,8 @@
   ],
   "scripts": {
     "test": "npm test --workspaces --if-present",
-    "test:rules": "firebase emulators:exec --only firestore,storage --project money-kids-test \"npm test -w @money-kids/rules-tests\""
+    "test:rules": "firebase emulators:exec --only firestore,storage --project money-kids-test \"npm test -w @money-kids/rules-tests\"",
+    "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
     "firebase-tools": "^15.25.1"
