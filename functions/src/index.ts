@@ -5,6 +5,8 @@ import { onCall } from 'firebase-functions/v2/https';
 import { createJoinCodeCore, mintKidTokenCore, revokeKidAccessCore } from './joinCodes.js';
 import { approveInvoiceCore } from './approval.js';
 import { acceptCounterOfferCore } from './counterOffer.js';
+import { recordPayoutCore } from './payout.js';
+import { setDeductionRulesCore } from './deductionRules.js';
 
 initializeApp();
 
@@ -22,3 +24,9 @@ export const approveInvoice = onCall(async (req) =>
 
 export const acceptCounterOffer = onCall(async (req) =>
   acceptCounterOfferCore(getFirestore(), req.auth, req.data));
+
+export const recordPayout = onCall(async (req) =>
+  recordPayoutCore(getFirestore(), req.auth, req.data));
+
+export const setDeductionRules = onCall(async (req) =>
+  setDeductionRulesCore(getFirestore(), req.auth, req.data));
