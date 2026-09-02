@@ -11,7 +11,8 @@
   "scripts": {
     "test": "npm test --workspaces --if-present",
     "test:rules": "firebase emulators:exec --only firestore,storage --project money-kids-test \"npm test -w @money-kids/rules-tests\"",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test:functions": "firebase emulators:exec --only firestore,auth --project money-kids-test \"npm test -w @money-kids/functions\""
   },
   "devDependencies": {
     "firebase-tools": "^15.25.1"
