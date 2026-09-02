@@ -3,6 +3,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { onCall } from 'firebase-functions/v2/https';
 import { createJoinCodeCore, mintKidTokenCore, revokeKidAccessCore } from './joinCodes.js';
+import { approveInvoiceCore } from './approval.js';
 
 initializeApp();
 
@@ -14,3 +15,6 @@ export const mintKidToken = onCall({ invoker: 'public' }, async (req) =>
 
 export const revokeKidAccess = onCall(async (req) =>
   revokeKidAccessCore(getFirestore(), getAuth(), req.auth, req.data));
+
+export const approveInvoice = onCall(async (req) =>
+  approveInvoiceCore(getFirestore(), req.auth, req.data));
