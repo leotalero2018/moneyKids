@@ -7,6 +7,8 @@ import { useSession } from '../session/SessionContext.js';
 import { createParentInvite } from '../lib/callables.js';
 import { Button } from '../components/Button.js';
 import { Card } from '../components/Card.js';
+import { DeductionSettings } from './DeductionSettings.js';
+import { clearPin, hasPin, lockParentView, setPin } from '../lib/pin.js';
 import { ErrorBanner } from '../components/ErrorBanner.js';
 import styles from './Kids.module.css';
 
@@ -20,6 +22,8 @@ export function Settings() {
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pin, setPinText] = useState('');
+  const [pinSet, setPinSet] = useState(() => hasPin());
 
   async function invite() {
     setBusy(true);
@@ -38,6 +42,8 @@ export function Settings() {
       <h1>{t('settings.title')}</h1>
       {error && <ErrorBanner message={error} />}
 
+      <DeductionSettings />
+
       <Card label={t('settings.invites')}>
         <h2>{t('settings.invites')}</h2>
         <p><small>{t('settings.inviteHelp')}</small></p>
@@ -50,6 +56,41 @@ export function Settings() {
             </li>
           ))}
         </ul>
+      </Card>
+
+      <Card label={t('pin.title')}>
+        <h2>{t('pin.title')}</h2>
+        <p><small>{t('pin.help')}</small></p>
+        <label htmlFor="pin-new">{t('pin.enter')}</label>
+        <input
+          id="pin-new" type="password" inputMode="numeric" value={pin}
+          onChange={(e) => setPinText(e.target.value)}
+        />
+        <Button
+          onClick={async () => {
+            try {
+              await setPin(pin);
+              setPinSet(true);
+              setPinText('');
+              setError(null);
+            } catch {
+              setError(t('pin.invalid'));
+            }
+          }}
+        >
+          {t('pin.set')}
+        </Button>
+        {pinSet && (
+          <>
+            <Button variant="secondary" onClick={() => lockParentView()}>{t('pin.lock')}</Button>
+            <Button
+              variant="danger"
+              onClick={() => { clearPin(); setPinSet(false); }}
+            >
+              {t('pin.clear')}
+            </Button>
+          </>
+        )}
       </Card>
 
       <Card label={t('settings.language')}>

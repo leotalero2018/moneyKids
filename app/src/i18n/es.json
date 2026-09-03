@@ -113,5 +113,31 @@
       "savings-credit": "A ahorro",
       "payout": "Pago"
     }
+  },
+  "deductions": {
+    "title": "Deducciones",
+    "help": "Se aplican cuando apruebas una factura. Se pueden apagar por niño.",
+    "preset": "Usar el paquete inicial (Ahorro 20% + Impuesto familiar 10%)",
+    "nameEs": "Nombre en español",
+    "nameEn": "Nombre en inglés",
+    "percent": "Porcentaje",
+    "destination": "A dónde va",
+    "toSavings": "Al ahorro del niño",
+    "withheld": "Se retiene",
+    "remove": "Quitar",
+    "off": "Las deducciones están apagadas.",
+    "badPercent": "El porcentaje debe estar entre 0 y 100, con máximo dos decimales.",
+    "tooMuch": "La suma de las deducciones no puede pasar de 100%."
+  },
+  "pin": {
+    "title": "PIN de adulto",
+    "help": "Sirve para que el niño no entre por accidente a la vista de adulto. No es una contraseña de seguridad.",
+    "set": "Guardar PIN",
+    "clear": "Quitar PIN",
+    "enter": "Escribe el PIN",
+    "submit": "Entrar",
+    "wrong": "Ese PIN no es correcto.",
+    "invalid": "El PIN debe tener entre 4 y 8 números.",
+    "lock": "Bloquear vista de adulto"
   }
 }

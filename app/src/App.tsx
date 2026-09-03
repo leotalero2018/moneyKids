@@ -4,6 +4,7 @@ import { SignIn } from './screens/SignIn.js';
 import { CreateFamily } from './screens/CreateFamily.js';
 import { JoinParent } from './screens/JoinParent.js';
 import { BottomTabs } from './components/BottomTabs.js';
+import { PinGate } from './components/PinGate.js';
 import { Spinner } from './components/Spinner.js';
 import { PARENT_TABS, parentRoutes } from './routes.js';
 import { usePendingCount } from './screens/Inbox.js';
@@ -19,7 +20,7 @@ function ParentShell() {
   // hook runs on every one of its renders
   const pending = usePendingCount();
   return (
-    <>
+    <PinGate>
       <main>
         <Routes>
           {parentRoutes.map((r) => <Route key={r.path} path={r.path} element={r.element} />)}
@@ -31,7 +32,7 @@ function ParentShell() {
           tab.to === '/inbox' ? { ...tab, badge: pending } : { ...tab }
         ))}
       />
-    </>
+    </PinGate>
   );
 }
 

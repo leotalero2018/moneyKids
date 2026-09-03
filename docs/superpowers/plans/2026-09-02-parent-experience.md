@@ -732,11 +732,17 @@ export async function initI18n(language: Language): Promise<i18n> {
 }
 ```
 
-Wire it in `app/src/main.tsx`, before render:
+Wire it in `app/src/main.tsx`. **Not with a top-level `await`** — that is unavailable in the browser targets Vite builds for, and `vite build` fails on it even though every test passes, because tests never build:
 ```tsx
 import { initI18n } from './i18n/index.js';
 
-await initI18n('es');
+void initI18n('es').then(() => {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+});
 ```
 
 And make `App.tsx` use a translated string so the wiring is exercised:

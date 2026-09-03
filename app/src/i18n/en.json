@@ -113,5 +113,31 @@
       "savings-credit": "To savings",
       "payout": "Payout"
     }
+  },
+  "deductions": {
+    "title": "Deductions",
+    "help": "Applied when you approve an invoice. Can be switched off per kid.",
+    "preset": "Use the starter preset (Savings 20% + Family tax 10%)",
+    "nameEs": "Spanish name",
+    "nameEn": "English name",
+    "percent": "Percent",
+    "destination": "Where it goes",
+    "toSavings": "To the kid's savings",
+    "withheld": "Withheld",
+    "remove": "Remove",
+    "off": "Deductions are off.",
+    "badPercent": "The percent must be between 0 and 100, with at most two decimals.",
+    "tooMuch": "Deductions cannot add up to more than 100%."
+  },
+  "pin": {
+    "title": "Adult PIN",
+    "help": "Keeps a kid from wandering into the adult view by accident. It is not a security password.",
+    "set": "Save PIN",
+    "clear": "Remove PIN",
+    "enter": "Enter the PIN",
+    "submit": "Enter",
+    "wrong": "That PIN is not correct.",
+    "invalid": "The PIN must be 4 to 8 digits.",
+    "lock": "Lock the adult view"
   }
 }
