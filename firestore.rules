@@ -211,6 +211,14 @@ service cloud.firestore {
         }
       }
 
+      match /inviteLog/{code} {
+        // audit trail written by the invite callables; parents read it in
+        // Settings. parentInvites itself needs no block — the catch-all deny
+        // keeps the codes unreadable, which is what makes them credentials
+        allow read: if isFamilyParent();
+        allow write: if false;
+      }
+
       match /ledger/{entryId} {
         allow get, list: if isFamilyParent()
           || (isFamilyKid() && resource.data.kidId == authKidId());

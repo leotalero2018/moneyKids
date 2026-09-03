@@ -47,3 +47,21 @@ describe('joinCodes', () => {
     await assertFails(getDoc(doc(kidCtx(env, 'fam1', 'k1').firestore(), 'joinCodes/ABC123')));
   });
 });
+
+describe('parent invites are server-only', () => {
+  it('no client can read or write parentInvites', async () => {
+    const pdb = parentCtx(env, 'p1').firestore();
+    await assertFails(getDoc(doc(pdb, 'parentInvites/ABCD2345')));
+    await assertFails(setDoc(doc(pdb, 'parentInvites/ABCD2345'), { familyId: 'fam1' }));
+  });
+  it('family parents read the invite log but cannot write it', async () => {
+    await seed(env, async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'families/fam1/inviteLog/ABCD2345'), {
+        createdBy: 'p1', createdAt: new Date(), usedBy: null, usedAt: null,
+      });
+    });
+    const pdb = parentCtx(env, 'p1').firestore();
+    await assertSucceeds(getDoc(doc(pdb, 'families/fam1/inviteLog/ABCD2345')));
+    await assertFails(setDoc(doc(pdb, 'families/fam1/inviteLog/XXXX2345'), { createdBy: 'p1' }));
+  });
+});

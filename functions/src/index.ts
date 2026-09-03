@@ -7,6 +7,7 @@ import { approveInvoiceCore } from './approval.js';
 import { acceptCounterOfferCore } from './counterOffer.js';
 import { recordPayoutCore } from './payout.js';
 import { setDeductionRulesCore } from './deductionRules.js';
+import { createParentInviteCore, acceptParentInviteCore } from './parentInvites.js';
 
 initializeApp();
 
@@ -30,3 +31,9 @@ export const recordPayout = onCall(async (req) =>
 
 export const setDeductionRules = onCall(async (req) =>
   setDeductionRulesCore(getFirestore(), req.auth, req.data));
+
+export const createParentInvite = onCall(async (req) =>
+  createParentInviteCore(getFirestore(), req.auth, req.data));
+
+export const acceptParentInvite = onCall(async (req) =>
+  acceptParentInviteCore(getFirestore(), req.auth, req.data));

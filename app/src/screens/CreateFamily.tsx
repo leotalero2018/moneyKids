@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 import { collection, doc, writeBatch } from 'firebase/firestore';
 import { auth, db } from '../firebase.js';
 import { Button } from '../components/Button.js';
@@ -70,6 +71,7 @@ export function CreateFamily() {
       <p>{t('createFamily.permanent')}</p>
 
       <Button disabled={busy} onClick={create}>{t('createFamily.submit')}</Button>
+      <Link to="/join">{t('joinParent.title')}</Link>
     </main>
   );
 }

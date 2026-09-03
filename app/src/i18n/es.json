@@ -47,5 +47,20 @@
     "codeHelp": "Escribe este código en el dispositivo del niño.",
     "revoke": "Revocar acceso",
     "invalidYear": "Escribe un año entre 2005 y este año."
+  },
+  "joinParent": {
+    "title": "Unirme a una familia",
+    "code": "Código de invitación",
+    "submit": "Unirme",
+    "failed": "Ese código no es válido o ya se usó."
+  },
+  "settings": {
+    "title": "Ajustes",
+    "invites": "Invitar a otro adulto",
+    "createInvite": "Crear código",
+    "inviteHelp": "El código sirve una sola vez y vence en 7 días. Quien lo tenga podrá aprobar facturas y registrar pagos.",
+    "inviteUsedBy": "Usado por",
+    "inviteUnused": "Sin usar",
+    "language": "Idioma"
   }
 }

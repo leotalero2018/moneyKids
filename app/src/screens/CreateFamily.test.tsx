@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { doc, getDocFromServer } from 'firebase/firestore';
 import { auth, db } from '../firebase.js';
 import { initI18n } from '../i18n/index.js';
@@ -17,7 +18,9 @@ beforeEach(async () => {
 // provider here would subscribe to the family the instant the optimistic
 // pointer lands, producing a denied read before the batch reaches the server
 function renderScreen() {
-  return render(<CreateFamily />);
+  // MemoryRouter only because the screen links to /join; still no
+  // SessionProvider, which this screen does not use
+  return render(<MemoryRouter><CreateFamily /></MemoryRouter>);
 }
 
 describe('CreateFamily', () => {

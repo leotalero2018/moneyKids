@@ -47,5 +47,20 @@
     "codeHelp": "Enter this code on the kid's device.",
     "revoke": "Revoke access",
     "invalidYear": "Enter a year between 2005 and this year."
+  },
+  "joinParent": {
+    "title": "Join a family",
+    "code": "Invite code",
+    "submit": "Join",
+    "failed": "That code is not valid or was already used."
+  },
+  "settings": {
+    "title": "Settings",
+    "invites": "Invite another adult",
+    "createInvite": "Create code",
+    "inviteHelp": "The code works once and expires in 7 days. Whoever holds it can approve invoices and record payouts.",
+    "inviteUsedBy": "Used by",
+    "inviteUnused": "Unused",
+    "language": "Language"
   }
 }

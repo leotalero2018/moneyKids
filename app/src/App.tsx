@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { SessionProvider, useSession } from './session/SessionContext.js';
 import { SignIn } from './screens/SignIn.js';
 import { CreateFamily } from './screens/CreateFamily.js';
+import { JoinParent } from './screens/JoinParent.js';
 import { BottomTabs } from './components/BottomTabs.js';
 import { Spinner } from './components/Spinner.js';
 import { PARENT_TABS, parentRoutes } from './routes.js';
@@ -30,7 +31,15 @@ function Shell() {
   const { status } = useSession();
   if (status === 'loading') return <main><Spinner /></main>;
   if (status === 'signed-out') return <SignIn />;
-  if (status === 'no-family') return <CreateFamily />;
+  if (status === 'no-family') {
+    // an invited parent needs /join before they have any family
+    return (
+      <Routes>
+        <Route path="/join" element={<JoinParent />} />
+        <Route path="*" element={<CreateFamily />} />
+      </Routes>
+    );
+  }
   return <ParentShell />;
 }
 

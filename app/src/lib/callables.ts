@@ -24,3 +24,9 @@ export const recordPayout =
 
 export const setDeductionRules =
   httpsCallable<{ familyId: string; rules: DeductionRule[] }, void>(fns, 'setDeductionRules');
+
+export const createParentInvite =
+  httpsCallable<{ familyId: string }, { code: string }>(fns, 'createParentInvite');
+
+export const acceptParentInvite =
+  httpsCallable<{ code: string }, { familyId: string }>(fns, 'acceptParentInvite');
