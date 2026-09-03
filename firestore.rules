@@ -218,6 +218,20 @@ service cloud.firestore {
       }
     }
 
+    match /parentIndex/{uid} {
+      // a parent's own pointer to their family: membership lives at
+      // families/{id}/members/{uid}, which cannot be found by query, so the
+      // session resolves the family through this document
+      allow get: if request.auth != null && request.auth.uid == uid;
+      // existsAfter means a parent cannot point themselves at a family they
+      // are not a member of — pointer and member doc must land in one batch
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['familyId'])
+        && request.resource.data.familyId is string
+        && existsAfter(/databases/$(database)/documents/families/$(request.resource.data.familyId)/members/$(uid));
+      allow update, delete: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

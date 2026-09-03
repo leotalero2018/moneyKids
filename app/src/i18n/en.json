@@ -1,9 +1,31 @@
 {
-  "nav": { "inbox": "Invoices", "activities": "Activities", "kids": "Kids", "payouts": "Payouts", "settings": "Settings" },
+  "nav": {
+    "inbox": "Invoices",
+    "activities": "Activities",
+    "kids": "Kids",
+    "payouts": "Payouts",
+    "settings": "Settings"
+  },
   "common": {
-    "save": "Save", "cancel": "Cancel", "loading": "Loading…",
-    "error": "Something went wrong", "retry": "Retry", "close": "Close",
+    "save": "Save",
+    "cancel": "Cancel",
+    "loading": "Loading…",
+    "error": "Something went wrong",
+    "retry": "Retry",
+    "close": "Close",
     "of": "of"
   },
-  "money": { "spendable": "Spendable", "savings": "Savings" }
+  "money": {
+    "spendable": "Spendable",
+    "savings": "Savings"
+  },
+  "signIn": {
+    "title": "Sign in",
+    "email": "Email",
+    "password": "Password",
+    "submit": "Sign in",
+    "create": "Create account",
+    "google": "Continue with Google",
+    "failed": "We couldn't sign you in. Check the email and password."
+  }
 }

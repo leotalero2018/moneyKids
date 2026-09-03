@@ -469,9 +469,13 @@ export default defineConfig({
 });
 ```
 
-`app/src/test/setup.ts`:
+`app/src/test/setup.ts` — the explicit `cleanup` matters: React Testing Library only registers its automatic cleanup when Vitest runs with `globals: true`, and this config does not. Without it every render stacks up in the same document and queries start failing with "found multiple elements".
 ```ts
 import '@testing-library/jest-dom/vitest';
+import { cleanup } from '@testing-library/react';
+import { afterEach } from 'vitest';
+
+afterEach(() => { cleanup(); });
 ```
 
 `app/index.html`:

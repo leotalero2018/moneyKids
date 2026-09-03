@@ -1,0 +1,11 @@
+.button {
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: var(--s-2) var(--s-4);
+  min-height: var(--tap);
+  font-weight: 600;
+}
+.button:disabled { opacity: 0.5; cursor: default; }
+.primary { background: var(--c-accent); color: var(--c-accent-ink); }
+.secondary { background: var(--c-surface); color: var(--c-ink); border-color: var(--c-line); }
+.danger { background: var(--c-surface); color: var(--c-danger); border-color: var(--c-danger); }

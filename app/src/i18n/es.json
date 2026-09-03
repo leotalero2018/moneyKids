@@ -1,9 +1,31 @@
 {
-  "nav": { "inbox": "Facturas", "activities": "Actividades", "kids": "Niños", "payouts": "Pagos", "settings": "Ajustes" },
+  "nav": {
+    "inbox": "Facturas",
+    "activities": "Actividades",
+    "kids": "Niños",
+    "payouts": "Pagos",
+    "settings": "Ajustes"
+  },
   "common": {
-    "save": "Guardar", "cancel": "Cancelar", "loading": "Cargando…",
-    "error": "Algo salió mal", "retry": "Reintentar", "close": "Cerrar",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "loading": "Cargando…",
+    "error": "Algo salió mal",
+    "retry": "Reintentar",
+    "close": "Cerrar",
     "of": "de"
   },
-  "money": { "spendable": "Disponible", "savings": "Ahorro" }
+  "money": {
+    "spendable": "Disponible",
+    "savings": "Ahorro"
+  },
+  "signIn": {
+    "title": "Entrar",
+    "email": "Correo",
+    "password": "Contraseña",
+    "submit": "Iniciar sesión",
+    "create": "Crear cuenta",
+    "google": "Continuar con Google",
+    "failed": "No pudimos entrar. Revisa el correo y la contraseña."
+  }
 }
