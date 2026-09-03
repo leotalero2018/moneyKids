@@ -596,7 +596,7 @@ createRoot(document.getElementById('root')!).render(
 );
 ```
 
-Add to root `package.json` scripts:
+Add `"app"` to the root `package.json` **`workspaces` array** — it currently lists only `["packages/*", "functions"]`, and without this every `-w @money-kids/app` command fails with "No workspaces found". Then add the scripts:
 ```json
     "dev": "npm run dev -w @money-kids/app",
     "build:app": "npm run build -w @money-kids/app",

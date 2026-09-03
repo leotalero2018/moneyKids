@@ -1,0 +1,17 @@
+@import './tokens.css';
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: var(--f-body) / 1.5 var(--f-stack);
+  color: var(--c-ink);
+  background: var(--c-bg);
+  /* the bottom tab bar sits above the home indicator */
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+button, input, select, textarea { font: inherit; }
+button { min-height: var(--tap); cursor: pointer; }
+h1, h2, h3 { margin: 0 0 var(--s-3); line-height: 1.25; }
+h1 { font-size: var(--f-title); }
