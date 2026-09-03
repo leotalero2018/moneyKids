@@ -6,6 +6,7 @@ import { JoinParent } from './screens/JoinParent.js';
 import { BottomTabs } from './components/BottomTabs.js';
 import { Spinner } from './components/Spinner.js';
 import { PARENT_TABS, parentRoutes } from './routes.js';
+import { usePendingCount } from './screens/Inbox.js';
 
 /**
  * The signed-in shell is its OWN component, not a branch inside Shell.
@@ -14,6 +15,9 @@ import { PARENT_TABS, parentRoutes } from './routes.js';
  * parent-only hook lives here, where it runs on every render.
  */
 function ParentShell() {
+  // safe here: ParentShell only ever renders when status === 'ready', so this
+  // hook runs on every one of its renders
+  const pending = usePendingCount();
   return (
     <>
       <main>
@@ -22,7 +26,11 @@ function ParentShell() {
           <Route path="*" element={<Navigate to={PARENT_TABS[0]!.to} replace />} />
         </Routes>
       </main>
-      <BottomTabs tabs={PARENT_TABS.map((tab) => ({ ...tab }))} />
+      <BottomTabs
+        tabs={PARENT_TABS.map((tab) => (
+          tab.to === '/inbox' ? { ...tab, badge: pending } : { ...tab }
+        ))}
+      />
     </>
   );
 }

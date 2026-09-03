@@ -1,0 +1,10 @@
+.screen { padding: var(--s-4) var(--s-4) calc(var(--tap) + var(--s-6)); }
+.amount { font-size: var(--f-money); color: var(--c-money); font-weight: 700; }
+.photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: var(--s-2); }
+.photos img { width: 100%; border-radius: var(--radius); }
+.screen textarea, .screen input {
+  display: block; width: 100%; margin-bottom: var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--c-line); border-radius: var(--radius);
+}
+.screen label { font-size: var(--f-small); color: var(--c-ink-soft); }

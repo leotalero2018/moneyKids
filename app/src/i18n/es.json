@@ -81,5 +81,23 @@
       "ideas": "Ideas",
       "help": "Ayudar"
     }
+  },
+  "inbox": {
+    "title": "Facturas pendientes",
+    "empty": "No hay facturas pendientes.",
+    "requested": "Pide",
+    "history": "Historia",
+    "photos": "Fotos"
+  },
+  "review": {
+    "approve": "Aprobar",
+    "return": "Devolver con comentario",
+    "counter": "Contraofertar",
+    "note": "Mensaje para el niño",
+    "counterAmount": "Otro monto",
+    "gross": "Monto aprobado",
+    "net": "Va al disponible",
+    "badAmount": "Escribe un monto válido.",
+    "noteTooLong": "El mensaje es demasiado largo (máximo 500 caracteres)."
   }
 }

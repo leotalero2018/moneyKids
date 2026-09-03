@@ -3449,14 +3449,19 @@ describe('InvoiceDetail', () => {
   });
 
   it('shows an error when the callable rejects, without changing the invoice', async () => {
-    await setDoc(doc(db, `families/${familyId}/invoices/inv1`), {
-      kidId: 'k1', activityId: null, description: 'Leí un libro', photoPaths: [],
-      status: 'returned', requestedAmount: 5000, eventCount: 2, createdAt: serverTimestamp(),
+    // a pending invoice pointing at a kid who does not exist: the review
+    // actions are on screen and the approval callable rejects with not-found.
+    // A non-pending invoice would NOT work here — the UI hides the actions
+    // entirely, which is correct, so the error path needs a failing approval.
+    await seedDoc(`families/${familyId}/invoices/inv2`, {
+      kidId: 'ghost', activityId: null, description: 'Sin niño', photoPaths: [],
+      status: 'sent', requestedAmount: 5000, eventCount: 1, createdAt: new Date(),
     });
-    renderAt('/invoice/inv1');
-    await userEvent.click(await screen.findByRole('button', { name: /aprobar/i }));
-    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
-    expect((await getDoc(doc(db, `families/${familyId}/invoices/inv1`))).get('status')).toBe('returned');
+    renderAt('/invoice/inv2');
+    await userEvent.click(await screen.findByRole('button', { name: /^aprobar$/i }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument(), { timeout: 5000 });
+    expect((await getDocFromServer(doc(db, `families/${familyId}/invoices/inv2`))).get('status'))
+      .toBe('sent');
   });
 });
 ```
