@@ -71,7 +71,11 @@ export function Activities() {
   async function setActive(activity: Activity, active: boolean) {
     // a partial update is fine: the rules see the merged document, and the
     // untouched createdBy/createdAt satisfy their immutability checks
-    await updateDoc(doc(db, `families/${familyId}/activities/${activity.id}`), { active });
+    try {
+      await updateDoc(doc(db, `families/${familyId}/activities/${activity.id}`), { active });
+    } catch {
+      setError(t('common.error'));
+    }
   }
 
   // every price on this screen is scaled by the family currency, so nothing
@@ -84,7 +88,16 @@ export function Activities() {
       {error && <ErrorBanner message={error} />}
 
       {activities.docs.length === 0 && (
-        <Button onClick={() => seedCatalog(familyId, family.currency, auth.currentUser!.uid)}>
+        <Button
+          onClick={async () => {
+            // awaited, not floating: a rejected seed used to vanish silently
+            try {
+              await seedCatalog(familyId, family.currency, auth.currentUser!.uid);
+            } catch {
+              setError(t('common.error'));
+            }
+          }}
+        >
           {t('activities.seed')}
         </Button>
       )}

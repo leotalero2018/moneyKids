@@ -28,6 +28,7 @@
 - Node ≥ 20.11, TypeScript `strict: true`. Every workspace has a `typecheck` script (`tsc --noEmit`) and **every task's verification step runs it** — Vitest transpiles without typechecking, so `strict` is otherwise unenforced.
 - Component tests run against the **Firebase emulators** via `firebase emulators:exec`, the same harness Plan 1 uses. Ports are in `firebase.json` (Firestore 8480, Auth 9099, Storage 9199).
 - **Assert Firestore state with `getDocFromServer` / `getDocsFromServer`, never plain `getDoc`.** Firestore answers a plain read from its local cache the moment a write is buffered locally, so a test that polls with `getDoc` passes *before* the batch has reached the server — and the next read, of a document the cache does not hold, then fails against a server that has nothing. This bites every "click the button, then check what was written" test in this plan.
+- **`clearFirestoreData()` must `await waitForPendingWrites(db)` before wiping.** The SDK keeps a mutation queue and re-sends any write it has not seen acknowledged; wiping the emulator mid-flight resets the write stream, so unacknowledged writes are **replayed after the wipe** and turn up in the next test. The symptom is baffling — the clear returns 200 and the previous test's documents are still there — and it makes `docs[0]` assertions fail against a leftover document. Relatedly, never leave a Firestore write as a floating promise in an `onClick`: await it and surface the error, or a rejected write disappears silently.
 - **Wrap a screen in `<SessionProvider>` only if it calls `useSession`.** A provider mounted around a screen that does not need it subscribes to the family document as soon as an optimistic pointer write appears locally, and that listener is denied by the rules until the batch actually lands — surfacing as an unexplained `FirebaseError` attributed to whatever test is running.
 - Commit after every task (steps say when).
 
@@ -1005,12 +1006,18 @@ export async function signInTestParent(uid: string): Promise<void> {
   }
 }
 
-/** Wipes Firestore between tests through the emulator's REST endpoint. */
+```ts
+/**
+ * Wipes Firestore between tests. waitForPendingWrites FIRST — it is
+ * load-bearing: unacknowledged writes are replayed after the wipe otherwise.
+ */
 export async function clearFirestoreData(): Promise<void> {
-  await fetch(
+  await waitForPendingWrites(db);
+  const res = await fetch(
     `http://127.0.0.1:8480/emulator/v1/projects/${PROJECT_ID}/databases/(default)/documents`,
     { method: 'DELETE' },
   );
+  if (!res.ok) throw new Error(`clearFirestoreData failed: ${res.status} ${await res.text()}`);
 }
 ```
 

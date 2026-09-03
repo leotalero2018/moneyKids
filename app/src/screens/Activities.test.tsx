@@ -52,12 +52,14 @@ describe('Activities', () => {
 
     const card = await screen.findByRole('group', { name: /Ordena tu cuarto/ });
     await userEvent.click(within(card).getByRole('checkbox', { name: /activa/i }));
+    // the default 1s waitFor is tight for a write round trip when the whole
+    // suite is running against one emulator
     await waitFor(async () => {
       const activities = await getDocsFromServer(collection(db, `families/${familyId}/activities`));
       expect(activities.docs[0]!.get('active')).toBe(false);
       // attribution survives the edit unchanged
       expect(activities.docs[0]!.get('createdBy')).toBe(auth.currentUser!.uid);
-    });
+    }, { timeout: 5000 });
   });
 
   it('rejects a title longer than the rules allow, before writing', async () => {

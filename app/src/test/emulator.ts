@@ -1,5 +1,6 @@
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
-import { auth } from '../firebase.js';
+import { waitForPendingWrites } from 'firebase/firestore';
+import { auth, db } from '../firebase.js';
 
 const PROJECT_ID = import.meta.env.VITE_FB_PROJECT_ID;
 const REST_BASE =
@@ -20,12 +21,22 @@ export async function signInTestParent(uid: string): Promise<void> {
   }
 }
 
-/** Wipes Firestore between tests through the emulator's REST endpoint. */
+/**
+ * Wipes Firestore between tests through the emulator's REST endpoint.
+ *
+ * waitForPendingWrites FIRST, and it is load-bearing: the SDK keeps a
+ * mutation queue and re-sends any write it has not seen acknowledged. Wiping
+ * the emulator mid-flight resets the write stream, so those unacknowledged
+ * writes are replayed AFTER the wipe and reappear in the next test — which
+ * looks exactly like "the clear didn't work".
+ */
 export async function clearFirestoreData(): Promise<void> {
-  await fetch(
+  await waitForPendingWrites(db);
+  const res = await fetch(
     `http://127.0.0.1:8480/emulator/v1/projects/${PROJECT_ID}/databases/(default)/documents`,
     { method: 'DELETE' },
   );
+  if (!res.ok) throw new Error(`clearFirestoreData failed: ${res.status} ${await res.text()}`);
 }
 
 type Json = string | number | boolean | null | Date | Json[] | { [k: string]: Json };
