@@ -99,5 +99,19 @@
     "net": "Va al disponible",
     "badAmount": "Escribe un monto válido.",
     "noteTooLong": "El mensaje es demasiado largo (máximo 500 caracteres)."
+  },
+  "payouts": {
+    "title": "Pagos",
+    "amount": "Monto a pagar",
+    "from": "De dónde sale",
+    "note": "Nota (opcional)",
+    "submit": "Registrar pago",
+    "history": "Movimientos",
+    "badAmount": "Escribe un monto válido.",
+    "types": {
+      "credit": "Factura aprobada",
+      "savings-credit": "A ahorro",
+      "payout": "Pago"
+    }
   }
 }

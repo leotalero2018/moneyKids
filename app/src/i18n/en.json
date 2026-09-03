@@ -99,5 +99,19 @@
     "net": "Goes to spendable",
     "badAmount": "Enter a valid amount.",
     "noteTooLong": "The message is too long (500 characters maximum)."
+  },
+  "payouts": {
+    "title": "Payouts",
+    "amount": "Amount to pay",
+    "from": "Paid from",
+    "note": "Note (optional)",
+    "submit": "Record payout",
+    "history": "History",
+    "badAmount": "Enter a valid amount.",
+    "types": {
+      "credit": "Approved invoice",
+      "savings-credit": "To savings",
+      "payout": "Payout"
+    }
   }
 }
