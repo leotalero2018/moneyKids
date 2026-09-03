@@ -1,3 +1,6 @@
+import { useTranslation } from 'react-i18next';
+
 export function App() {
-  return <main>Money Kids</main>;
+  const { t } = useTranslation();
+  return <main>{t('nav.inbox')}</main>;
 }
