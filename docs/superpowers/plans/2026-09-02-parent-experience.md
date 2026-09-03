@@ -118,6 +118,11 @@ And inside `describe('activities', ...)`:
       { ...valid, createdBy: 'someone-else' }));
     await assertFails(setDoc(doc(pdb, 'families/fam1/activities/act4'),
       { ...valid, createdAt: new Date(2000, 0, 1) }));
+    // an edit may change the activity but never its attribution
+    await assertSucceeds(updateDoc(doc(pdb, 'families/fam1/activities/act2'), { active: false }));
+    await assertFails(updateDoc(doc(pdb, 'families/fam1/activities/act2'), { createdBy: 'p2' }));
+    await assertFails(updateDoc(doc(pdb, 'families/fam1/activities/act2'),
+      { createdAt: serverTimestamp() }));
   });
 ```
 
@@ -157,29 +162,36 @@ In the `invoices` match block, extend both key lists and add the two checks:
 
 `createdAt` is absent from every `affectedKeys().hasOnly([...])` list on the update rules, so it is already immutable after creation — no further change is needed for that, and the test above proves it.
 
-In the `activities` match block:
+In the `activities` match block, **split `create` from `update`**. Sharing one clause looks tidier but forces `createdAt == request.time` on edits too, which makes attribution mean "last edited by" instead of "created by" — and rewritable attribution is not attribution:
 
 ```
-        allow create, update: if isFamilyParent()
-          && act().keys().hasOnly(['titleEs', 'titleEn', 'descriptionEs', 'descriptionEn',
-                                   'suggestedPrice', 'category', 'repeatable', 'active',
-                                   'createdBy', 'createdAt'])
-          && act().keys().hasAll(['titleEs', 'titleEn', 'descriptionEs', 'descriptionEn',
-                                  'suggestedPrice', 'category', 'repeatable', 'active',
-                                  'createdBy', 'createdAt'])
-          && act().suggestedPrice is int
-          && act().suggestedPrice >= 0
-          && boundedText(act().titleEs, 80) && boundedText(act().titleEn, 80)
-          && boundedText(act().descriptionEs, 500) && boundedText(act().descriptionEn, 500)
-          && act().category in ['learn', 'courage', 'ideas', 'help']
-          && act().repeatable is bool
-          && act().active is bool
-          // the spec requires every activity to record the acting parent
+        function actShapeOk() {
+          return act().keys().hasOnly(['titleEs', 'titleEn', 'descriptionEs', 'descriptionEn',
+                                       'suggestedPrice', 'category', 'repeatable', 'active',
+                                       'createdBy', 'createdAt'])
+            && act().keys().hasAll(['titleEs', 'titleEn', 'descriptionEs', 'descriptionEn',
+                                    'suggestedPrice', 'category', 'repeatable', 'active',
+                                    'createdBy', 'createdAt'])
+            && act().suggestedPrice is int
+            && act().suggestedPrice >= 0
+            && boundedText(act().titleEs, 80) && boundedText(act().titleEn, 80)
+            && boundedText(act().descriptionEs, 500) && boundedText(act().descriptionEn, 500)
+            && act().category in ['learn', 'courage', 'ideas', 'help']
+            && act().repeatable is bool
+            && act().active is bool;
+        }
+        // the spec requires every activity to record the acting parent
+        allow create: if isFamilyParent() && actShapeOk()
           && act().createdBy == request.auth.uid
           && act().createdAt == request.time;
+        // attribution is immutable: an edit may change the activity but never
+        // who created it or when, so a later editor cannot claim authorship
+        allow update: if isFamilyParent() && actShapeOk()
+          && act().createdBy == resource.data.createdBy
+          && act().createdAt == resource.data.createdAt;
 ```
 
-Note the consequence for Task 10: because `create, update` share one rule, **an activity edit must resend `createdBy` and a fresh `createdAt`**. That is acceptable for v1 (activities are not audit records the way the ledger is), and Task 10's edit path does exactly this.
+Consequence for Task 10: a partial `updateDoc({ active: false })` **works** — `request.resource.data` on an update is the resulting document, so `hasAll` is satisfied by the merge and the unchanged attribution passes its equality checks. Task 10's edit path is therefore an ordinary partial update, not a full resend.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2854,8 +2866,7 @@ describe('Activities', () => {
     await waitFor(async () => {
       const activities = await getDocs(collection(db, `families/${familyId}/activities`));
       expect(activities.docs[0].get('active')).toBe(false);
-      // the rules share one clause for create and update, so an edit must
-      // resend createdBy and a fresh createdAt
+      // attribution survives the edit unchanged
       expect(activities.docs[0].get('createdBy')).toBe(auth.currentUser!.uid);
     });
   });
@@ -2977,16 +2988,9 @@ export function Activities() {
   }
 
   async function setActive(activity: Activity, active: boolean) {
-    const uid = auth.currentUser!.uid;
-    // create and update share one rule clause, so every required field must be
-    // present on an update too — including a fresh createdAt
-    await updateDoc(doc(db, `families/${familyId}/activities/${activity.id}`), {
-      titleEs: activity.titleEs, titleEn: activity.titleEn,
-      descriptionEs: activity.descriptionEs, descriptionEn: activity.descriptionEn,
-      suggestedPrice: activity.suggestedPrice, category: activity.category,
-      repeatable: activity.repeatable, active,
-      createdBy: uid, createdAt: serverTimestamp(),
-    });
+    // a partial update is fine: the rules see the merged document, and the
+    // untouched createdBy/createdAt satisfy their immutability checks
+    await updateDoc(doc(db, `families/${familyId}/activities/${activity.id}`), { active });
   }
 
   return (

@@ -58,19 +58,31 @@ service cloud.firestore {
       match /activities/{activityId} {
         function act() { return request.resource.data; }
         allow read: if isFamilyParent() || isFamilyKid();
-        allow create, update: if isFamilyParent()
-          && act().keys().hasOnly(['titleEs', 'titleEn', 'descriptionEs', 'descriptionEn',
-                                   'suggestedPrice', 'category', 'repeatable', 'active'])
-          && act().keys().hasAll(['titleEs', 'titleEn', 'descriptionEs', 'descriptionEn',
-                                  'suggestedPrice', 'category', 'repeatable', 'active'])
-          && act().suggestedPrice is int
-          && act().suggestedPrice >= 0
-          && boundedText(act().titleEs, 80) && boundedText(act().titleEn, 80)
-          && boundedText(act().descriptionEs, 500) && boundedText(act().descriptionEn, 500)
-          // the four pillars from the spec; anything else is not a category
-          && act().category in ['learn', 'courage', 'ideas', 'help']
-          && act().repeatable is bool
-          && act().active is bool;
+        function actShapeOk() {
+          return act().keys().hasOnly(['titleEs', 'titleEn', 'descriptionEs', 'descriptionEn',
+                                       'suggestedPrice', 'category', 'repeatable', 'active',
+                                       'createdBy', 'createdAt'])
+            && act().keys().hasAll(['titleEs', 'titleEn', 'descriptionEs', 'descriptionEn',
+                                    'suggestedPrice', 'category', 'repeatable', 'active',
+                                    'createdBy', 'createdAt'])
+            && act().suggestedPrice is int
+            && act().suggestedPrice >= 0
+            && boundedText(act().titleEs, 80) && boundedText(act().titleEn, 80)
+            && boundedText(act().descriptionEs, 500) && boundedText(act().descriptionEn, 500)
+            // the four pillars from the spec; anything else is not a category
+            && act().category in ['learn', 'courage', 'ideas', 'help']
+            && act().repeatable is bool
+            && act().active is bool;
+        }
+        // the spec requires every activity to record the acting parent
+        allow create: if isFamilyParent() && actShapeOk()
+          && act().createdBy == request.auth.uid
+          && act().createdAt == request.time;
+        // attribution is immutable: an edit may change the activity but never
+        // who created it or when, so a later editor cannot claim authorship
+        allow update: if isFamilyParent() && actShapeOk()
+          && act().createdBy == resource.data.createdBy
+          && act().createdAt == resource.data.createdAt;
         allow delete: if isFamilyParent();
       }
 
@@ -96,16 +108,19 @@ service cloud.firestore {
         allow list: if isFamilyParent() || (isFamilyKid() && resource.data.kidId == authKidId());
 
         allow create: if isFamilyKid()
-          && newInv().keys().hasOnly(['kidId', 'activityId', 'description', 'photoPaths', 'status', 'requestedAmount', 'eventCount'])
+          && newInv().keys().hasOnly(['kidId', 'activityId', 'description', 'photoPaths', 'status', 'requestedAmount', 'eventCount', 'createdAt'])
           // hasOnly permits omissions — hasAll is what makes a partial invoice
           // (and the surprises a missing field causes downstream) impossible
-          && newInv().keys().hasAll(['kidId', 'activityId', 'description', 'photoPaths', 'status', 'requestedAmount', 'eventCount'])
+          && newInv().keys().hasAll(['kidId', 'activityId', 'description', 'photoPaths', 'status', 'requestedAmount', 'eventCount', 'createdAt'])
           && newInv().kidId == authKidId()
           && newInv().status == 'draft'
           && newInv().eventCount is int && newInv().eventCount == 0
           && newInv().requestedAmount is int && newInv().requestedAmount > 0
           && descriptionOk()
           && (newInv().activityId == null || newInv().activityId is string)
+          // server-derived: the parent inbox orders by this, so a client must
+          // not be able to choose where its invoice lands in the queue
+          && newInv().createdAt == request.time
           && photosWithinCap();
 
         // kid edits in place (no transition); activityId editable only in draft

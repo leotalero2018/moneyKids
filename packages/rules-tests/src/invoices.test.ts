@@ -12,7 +12,7 @@ afterAll(async () => { await env.cleanup(); });
 
 const draft = {
   kidId: 'k1', activityId: null, description: 'Leí un libro', photoPaths: [],
-  status: 'draft', requestedAmount: 5000, eventCount: 0,
+  status: 'draft', requestedAmount: 5000, eventCount: 0, createdAt: serverTimestamp(),
 };
 
 beforeEach(async () => {
@@ -26,6 +26,7 @@ beforeEach(async () => {
     await setDoc(doc(db, 'families/fam1/activities/act1'), {
       titleEs: 'Lee un libro', titleEn: 'Read a book', descriptionEs: '', descriptionEn: '',
       suggestedPrice: 5000, category: 'learn', repeatable: true, active: true,
+      createdBy: 'p1', createdAt: serverTimestamp(),
     });
   });
 });
@@ -46,10 +47,31 @@ describe('activities', () => {
     await assertSucceeds(setDoc(doc(pdb, 'families/fam1/activities/act2'), {
       titleEs: 'Valentía', titleEn: 'Courage', descriptionEs: '', descriptionEn: '',
       suggestedPrice: 3000, category: 'courage', repeatable: false, active: true,
+      createdBy: 'p1', createdAt: serverTimestamp(),
     }));
     const kdb = kidCtx(env, 'fam1', 'k1').firestore();
     await assertSucceeds(getDoc(doc(kdb, 'families/fam1/activities/act1')));
     await assertFails(updateDoc(doc(kdb, 'families/fam1/activities/act1'), { suggestedPrice: 999999 }));
+  });
+
+  it('activities record the acting parent and creation time', async () => {
+    const pdb = parentCtx(env, 'p1').firestore();
+    const valid = {
+      titleEs: 'Valentía', titleEn: 'Courage', descriptionEs: '', descriptionEn: '',
+      suggestedPrice: 3000, category: 'courage', repeatable: false, active: true,
+      createdBy: 'p1', createdAt: serverTimestamp(),
+    };
+    await assertSucceeds(setDoc(doc(pdb, 'families/fam1/activities/actA'), valid));
+    // createdBy is the acting parent, not a claim
+    await assertFails(setDoc(doc(pdb, 'families/fam1/activities/actB'),
+      { ...valid, createdBy: 'someone-else' }));
+    await assertFails(setDoc(doc(pdb, 'families/fam1/activities/actC'),
+      { ...valid, createdAt: new Date(2000, 0, 1) }));
+    // an edit may change the activity but never its attribution
+    await assertSucceeds(updateDoc(doc(pdb, 'families/fam1/activities/actA'), { active: false }));
+    await assertFails(updateDoc(doc(pdb, 'families/fam1/activities/actA'), { createdBy: 'p2' }));
+    await assertFails(updateDoc(doc(pdb, 'families/fam1/activities/actA'),
+      { createdAt: serverTimestamp() }));
   });
 
   it('activity writes are field-whitelisted and type-checked', async () => {
@@ -57,6 +79,7 @@ describe('activities', () => {
     const valid = {
       titleEs: 'Valentía', titleEn: 'Courage', descriptionEs: '', descriptionEn: '',
       suggestedPrice: 3000, category: 'courage', repeatable: false, active: true,
+      createdBy: 'p1', createdAt: serverTimestamp(),
     };
     await assertSucceeds(setDoc(doc(pdb, 'families/fam1/activities/ok'), valid));
     // unknown keys cannot be smuggled onto the activity
@@ -160,6 +183,18 @@ describe('invoice lifecycle', () => {
     await assertFails(ret('x'.repeat(501)));
     await assertFails(ret(42));
     await assertSucceeds(ret('explica un poco más'));
+  });
+
+  it('draft creation stamps an immutable server-set createdAt', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    // the inbox orders by this field, so it must exist and be server-derived
+    await assertSucceeds(setDoc(doc(kdb, 'families/fam1/invoices/inv1'), draft));
+    // a client-chosen time is rejected — ordering must not be forgeable
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/inv2'),
+      { ...draft, createdAt: new Date(2000, 0, 1) }));
+    // and it cannot be rewritten later
+    await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/inv1'),
+      { createdAt: serverTimestamp() }));
   });
 
   it('caps photos per invoice at 8 on create and on edit', async () => {
