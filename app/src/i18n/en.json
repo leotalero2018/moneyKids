@@ -36,5 +36,16 @@
     "permanent": "The currency cannot be changed later.",
     "submit": "Create family",
     "nameRequired": "Enter a name for the family."
+  },
+  "kids": {
+    "title": "Kids",
+    "name": "Name",
+    "birthYear": "Birth year",
+    "add": "Add kid",
+    "deductions": "Deductions",
+    "code": "Show code",
+    "codeHelp": "Enter this code on the kid's device.",
+    "revoke": "Revoke access",
+    "invalidYear": "Enter a year between 2005 and this year."
   }
 }

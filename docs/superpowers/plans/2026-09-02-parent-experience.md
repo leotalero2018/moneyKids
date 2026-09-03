@@ -789,7 +789,7 @@ git commit -m "feat(app): bilingual i18n foundation with enforced key parity"
   - `db`, `auth`, `fns` from `firebase.ts` (emulator-connected when `VITE_USE_EMULATORS` is set)
   - `useDoc<T>(path: string | null): { data: T | null; loading: boolean; error: Error | null }` — `null` path means "not ready yet", and the hook stays in `loading: false, data: null` rather than subscribing
   - `useCollection<T>(query: Query | null): { docs: Array<T & { id: string }>; loading: boolean; error: Error | null }`
-  - `signInTestParent(uid: string)` and `seedAsAdmin(fn)` from `test/emulator.ts`, used by every later component test
+  - `signInTestParent(uid: string)`, `clearFirestoreData()`, and `seedDoc(path, data)` from `test/emulator.ts`, used by every later component test
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1011,6 +1011,42 @@ export async function clearFirestoreData(): Promise<void> {
     `http://127.0.0.1:8480/emulator/v1/projects/${PROJECT_ID}/databases/(default)/documents`,
     { method: 'DELETE' },
   );
+}
+```
+
+**Also add `seedDoc(path, data)`**, which writes through the emulator REST API with the `Bearer owner` token to bypass rules — the client-side equivalent of the rules-tests' `withSecurityRulesDisabled`. Tasks 8, 11, and 12 cannot work without it, because their fixtures are states **no client may write**: a kid with a non-zero balance (creates must be zero, balances are server-only afterwards) and an invoice in `sent` (only a kid session may create one, and only as a `draft`). It encodes plain JS values into Firestore REST's typed JSON:
+
+```ts
+type Json = string | number | boolean | null | Date | Json[] | { [k: string]: Json };
+
+function toValue(v: Json): Record<string, unknown> {
+  if (v === null) return { nullValue: null };
+  if (v instanceof Date) return { timestampValue: v.toISOString() };
+  if (Array.isArray(v)) return { arrayValue: { values: v.map(toValue) } };
+  switch (typeof v) {
+    case 'string': return { stringValue: v };
+    case 'boolean': return { booleanValue: v };
+    case 'number':
+      return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+    default:
+      return { mapValue: { fields: toFields(v as { [k: string]: Json }) } };
+  }
+}
+
+function toFields(obj: { [k: string]: Json }): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, toValue(v)]));
+}
+
+export async function seedDoc(path: string, data: { [k: string]: Json }): Promise<void> {
+  const res = await fetch(
+    `http://127.0.0.1:8480/v1/projects/${PROJECT_ID}/databases/(default)/documents/${path}`,
+    {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: toFields(data) }),
+    },
+  );
+  if (!res.ok) throw new Error(`seedDoc ${path} failed: ${res.status} ${await res.text()}`);
 }
 ```
 
@@ -1608,10 +1644,18 @@ Expected: FAIL — `CreateFamily.js` and the routing do not exist.
 import { formatMinor } from '@money-kids/shared';
 import { useSession } from '../session/SessionContext.js';
 
-/** The single place minor units become text. Never format money inline. */
+/**
+ * The single place minor units become text. Never format money inline.
+ *
+ * If the family currency is not known yet, render NOTHING rather than falling
+ * back to a default: 7000 COP formatted as USD reads "US$ 70,00", and showing
+ * a wrong amount — even for one frame — is worse than showing none. Screens
+ * under ParentShell always have a loaded family.
+ */
 export function Money({ amount, currency }: { amount: number; currency?: string }) {
   const { family } = useSession();
-  const code = currency ?? family?.currency ?? 'USD';
+  const code = currency ?? family?.currency;
+  if (!code) return null;
   const locale = (family?.language ?? 'es') === 'es' ? 'es-CO' : 'en-US';
   return <span>{formatMinor(amount, code, locale)}</span>;
 }
@@ -1903,13 +1947,16 @@ describe('Kids', () => {
   });
 
   it('lists kids with balances and toggles deductions', async () => {
-    await setDoc(doc(db, `families/${familyId}/kids/k1`), {
+    // seedDoc, not setDoc: the rules require zero balances on create and make
+    // balances server-only afterwards, so this fixture is unwritable by a client
+    await seedDoc(`families/${familyId}/kids/k1`, {
       name: 'Mia', birthYear: 2016, deductionsEnabled: false,
       spendableBalance: 7000, savingsBalance: 2000,
     });
     renderScreen();
     const card = await screen.findByRole('group', { name: /Mia/ });
-    expect(card).toHaveTextContent(/7[.,]?000/);
+    // the amount appears once the family (and so its currency) has loaded
+    await waitFor(() => expect(card).toHaveTextContent(/7[.,]?000/));
     await userEvent.click(within(card).getByRole('checkbox', { name: /deducciones/i }));
     await waitFor(async () => {
       const kids = await getDocs(collection(db, `families/${familyId}/kids`));

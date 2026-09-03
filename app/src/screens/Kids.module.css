@@ -1,0 +1,12 @@
+.screen { padding: var(--s-4) var(--s-4) calc(var(--tap) + var(--s-6)); }
+.screen input {
+  display: block;
+  width: 100%;
+  margin-bottom: var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius);
+  min-height: var(--tap);
+}
+.screen label { font-size: var(--f-small); color: var(--c-ink-soft); }
+.actions { display: flex; gap: var(--s-2); flex-wrap: wrap; }

@@ -36,5 +36,16 @@
     "permanent": "La moneda no se puede cambiar después.",
     "submit": "Crear familia",
     "nameRequired": "Escribe un nombre para la familia."
+  },
+  "kids": {
+    "title": "Niños",
+    "name": "Nombre",
+    "birthYear": "Año de nacimiento",
+    "add": "Agregar niño",
+    "deductions": "Deducciones",
+    "code": "Mostrar código",
+    "codeHelp": "Escribe este código en el dispositivo del niño.",
+    "revoke": "Revocar acceso",
+    "invalidYear": "Escribe un año entre 2005 y este año."
   }
 }
