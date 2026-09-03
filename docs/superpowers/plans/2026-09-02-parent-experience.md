@@ -776,7 +776,7 @@ git commit -m "feat(app): bilingual i18n foundation with enforced key parity"
 
 **Files:**
 - Create: `app/src/firebase.ts`, `app/src/hooks/useDoc.ts`, `app/src/hooks/useCollection.ts`, `app/src/hooks/hooks.test.tsx`, `app/src/test/emulator.ts`
-- Modify: `app/.env.development` (create)
+- Create: `app/.env`
 
 **Interfaces:**
 - Produces:
@@ -791,8 +791,8 @@ git commit -m "feat(app): bilingual i18n foundation with enforced key parity"
 ```tsx
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
-import { collection, doc, query, setDoc, where } from 'firebase/firestore';
-import { db } from '../firebase.js';
+import { collection, doc, query, setDoc, where, writeBatch } from 'firebase/firestore';
+import { auth, db } from '../firebase.js';
 import { useDoc } from './useDoc.js';
 import { useCollection } from './useCollection.js';
 import { signInTestParent, clearFirestoreData } from '../test/emulator.js';
@@ -801,10 +801,15 @@ beforeAll(async () => { await signInTestParent('p1'); });
 
 beforeEach(async () => {
   await clearFirestoreData();
-  await setDoc(doc(db, 'families/fam1'), {
-    name: 'Talero', language: 'es', currency: 'COP', createdBy: 'p1', deductionRules: [],
+  // the real uid, never the literal 'p1' — and family + founder member doc
+  // MUST be one batch, or the founder-membership rule rejects the family
+  const uid = auth.currentUser!.uid;
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'families/fam1'), {
+    name: 'Talero', language: 'es', currency: 'COP', createdBy: uid, deductionRules: [],
   });
-  await setDoc(doc(db, 'families/fam1/members/p1'), { role: 'parent', displayName: 'Leo' });
+  batch.set(doc(db, 'families/fam1/members', uid), { role: 'parent', displayName: 'Leo' });
+  await batch.commit();
   await setDoc(doc(db, 'families/fam1/kids/k1'), {
     name: 'Mia', birthYear: 2016, deductionsEnabled: false, spendableBalance: 0, savingsBalance: 0,
   });
@@ -854,7 +859,7 @@ Expected: FAIL — `firebase.js`, the hooks, and the test helper do not exist.
 
 - [ ] **Step 3: Implement**
 
-`app/.env.development`:
+`app/.env` — **not** `.env.development`: Vitest runs in `test` mode and would never load a `.development` file, so the app would initialize with no API key and fail with `auth/invalid-api-key`.
 ```
 VITE_USE_EMULATORS=1
 VITE_FB_PROJECT_ID=money-kids-test
@@ -1005,24 +1010,12 @@ export async function clearFirestoreData(): Promise<void> {
 
 **Note for the implementer:** `signInTestParent('p1')` produces a Firebase uid that is *not* the string `p1` — it is whatever the Auth emulator assigns. Every test that seeds a `members/{uid}` doc must therefore use `auth.currentUser!.uid`, not the literal. Write the seeds that way from the start; a literal `'p1'` member doc will make every parent read fail the membership check.
 
-- [ ] **Step 4: Fix the test seeds to use the real uid**
-
-Update `hooks.test.tsx`'s `beforeEach` accordingly:
-```tsx
-  const uid = auth.currentUser!.uid;
-  await setDoc(doc(db, 'families/fam1'), {
-    name: 'Talero', language: 'es', currency: 'COP', createdBy: uid, deductionRules: [],
-  });
-  await setDoc(doc(db, 'families/fam1/members', uid), { role: 'parent', displayName: 'Leo' });
-```
-(with `import { auth } from '../firebase.js';`). The family create rule requires `createdBy == request.auth.uid` and the founder member doc, so these writes only succeed with the real uid.
-
-- [ ] **Step 5: Run to verify it passes**
+- [ ] **Step 4: Run to verify it passes**
 
 Run: `npm run test:app && npm run typecheck -w @money-kids/app`
 Expected: all PASS. If `useCollection` resubscribes endlessly (visible as a test timeout), the `queryEqual` guard is wrong — that guard is the whole reason the hook takes a `Query` rather than a path.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add app
