@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { computeDeductions, validateDeductionRules, type DeductionRule } from './money.js';
+import {
+  computeDeductions, validateDeductionRules, minorDigits, formatMinor, parseMajor,
+  type DeductionRule,
+} from './money.js';
 
 const savings20: DeductionRule = { nameEs: 'Ahorro', nameEn: 'Savings', basisPoints: 2000, destination: 'savings' };
 const tax10: DeductionRule = { nameEs: 'Impuesto familiar', nameEn: 'Family tax', basisPoints: 1000, destination: 'withheld' };
@@ -89,5 +92,67 @@ describe('computeDeductions', () => {
     const r = computeDeductions(150, [a, b]);
     expect(r.lines.map((l) => l.amount)).toEqual([38, 37]);
     expect(r.netAmount).toBe(75);
+  });
+});
+
+describe('minorDigits', () => {
+  it('knows the zero-decimal and two-decimal currencies the app ships with', () => {
+    expect(minorDigits('COP')).toBe(0);
+    expect(minorDigits('USD')).toBe(2);
+    expect(minorDigits('EUR')).toBe(2);
+    expect(minorDigits('JPY')).toBe(0);
+  });
+  it('rejects malformed codes rather than guessing', () => {
+    expect(() => minorDigits('')).toThrow(/currency/i);
+    expect(() => minorDigits('usd')).toThrow(/currency/i);
+    expect(() => minorDigits('DOLLARS')).toThrow(/currency/i);
+  });
+});
+
+describe('formatMinor', () => {
+  // Assert on digits, not on symbols or spacing: ICU output varies by
+  // Node version, and a test pinned to '$1,234.00' will fail on an upgrade
+  // for no real reason.
+  it('scales by the currency, not by a fixed 100', () => {
+    expect(formatMinor(1234, 'COP', 'es-CO')).toMatch(/1[.,\s]?234/);
+    expect(formatMinor(1234, 'COP', 'es-CO')).not.toMatch(/12[.,]34/);
+    expect(formatMinor(1234, 'USD', 'en-US')).toMatch(/12[.,]34/);
+  });
+  it('formats zero and rejects non-integers', () => {
+    expect(formatMinor(0, 'USD', 'en-US')).toMatch(/0/);
+    expect(() => formatMinor(12.5, 'USD', 'en-US')).toThrow(/integer/i);
+  });
+});
+
+describe('parseMajor', () => {
+  // Contract: a zero-decimal currency cannot have a decimal mark, so every
+  // separator in it is grouping and is stripped. A two-decimal currency
+  // accepts exactly one separator followed by 1-2 digits and nothing else —
+  // '1,234' is REJECTED rather than guessed at, because grouping and decimal
+  // marks are ambiguous across locales and this is money.
+  it('converts major-unit input to minor units per currency', () => {
+    expect(parseMajor('1234', 'COP')).toBe(1234);
+    expect(parseMajor('12.34', 'USD')).toBe(1234);
+    expect(parseMajor('12,34', 'USD')).toBe(1234);
+    expect(parseMajor('12.3', 'USD')).toBe(1230);
+    expect(parseMajor('12', 'USD')).toBe(1200);
+    expect(parseMajor('0', 'USD')).toBe(0);
+  });
+  it('strips grouping in zero-decimal currencies, where it cannot be a decimal', () => {
+    expect(parseMajor('  1.234  ', 'COP')).toBe(1234);
+    expect(parseMajor('1,234,567', 'COP')).toBe(1234567);
+  });
+  it('rejects a decimal mark a zero-decimal currency cannot have', () => {
+    expect(() => parseMajor('12.5', 'COP')).toThrow(/decimal/i);
+  });
+  it('rejects more decimals than the currency has, and ambiguous grouping', () => {
+    expect(() => parseMajor('12.345', 'USD')).toThrow(/decimal/i);
+    expect(() => parseMajor('1,234', 'USD')).toThrow(/decimal/i);
+  });
+  it('rejects negatives, blanks, and non-numeric text', () => {
+    expect(() => parseMajor('-5', 'USD')).toThrow(/amount/i);
+    expect(() => parseMajor('', 'USD')).toThrow(/amount/i);
+    expect(() => parseMajor('abc', 'USD')).toThrow(/amount/i);
+    expect(() => parseMajor('1e3', 'USD')).toThrow(/amount/i);
   });
 });
