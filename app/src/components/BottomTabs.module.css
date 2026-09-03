@@ -1,0 +1,30 @@
+.tabs {
+  position: fixed;
+  inset: auto 0 0 0;
+  display: grid;
+  grid-auto-flow: column;
+  border-top: 1px solid var(--c-line);
+  background: var(--c-surface);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-1);
+  min-height: var(--tap);
+  padding: var(--s-2);
+  font-size: var(--f-small);
+  color: var(--c-ink-soft);
+  text-decoration: none;
+}
+.active { color: var(--c-accent); font-weight: 600; }
+.badge {
+  min-width: 1.25rem;
+  padding: 0 var(--s-1);
+  border-radius: 999px;
+  background: var(--c-danger);
+  color: #fff;
+  font-size: var(--f-small);
+  text-align: center;
+}

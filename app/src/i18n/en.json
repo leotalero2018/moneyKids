@@ -27,5 +27,14 @@
     "create": "Create account",
     "google": "Continue with Google",
     "failed": "We couldn't sign you in. Check the email and password."
+  },
+  "createFamily": {
+    "title": "Create your family",
+    "name": "Family name",
+    "language": "Language",
+    "currency": "Currency",
+    "permanent": "The currency cannot be changed later.",
+    "submit": "Create family",
+    "nameRequired": "Enter a name for the family."
   }
 }

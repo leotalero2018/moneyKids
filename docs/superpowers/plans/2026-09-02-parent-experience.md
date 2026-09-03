@@ -27,6 +27,8 @@
 - **Bilingual from day one.** Every user-visible string comes from `react-i18next` with `es` and `en` resources. The starter activity catalog is authored in both languages. `es` is the default. No hardcoded copy in components — a test enforces this (Task 4).
 - Node ≥ 20.11, TypeScript `strict: true`. Every workspace has a `typecheck` script (`tsc --noEmit`) and **every task's verification step runs it** — Vitest transpiles without typechecking, so `strict` is otherwise unenforced.
 - Component tests run against the **Firebase emulators** via `firebase emulators:exec`, the same harness Plan 1 uses. Ports are in `firebase.json` (Firestore 8480, Auth 9099, Storage 9199).
+- **Assert Firestore state with `getDocFromServer` / `getDocsFromServer`, never plain `getDoc`.** Firestore answers a plain read from its local cache the moment a write is buffered locally, so a test that polls with `getDoc` passes *before* the batch has reached the server — and the next read, of a document the cache does not hold, then fails against a server that has nothing. This bites every "click the button, then check what was written" test in this plan.
+- **Wrap a screen in `<SessionProvider>` only if it calls `useSession`.** A provider mounted around a screen that does not need it subscribes to the family document as soon as an optimistic pointer write appears locally, and that listener is denied by the rules until the batch actually lands — surfacing as an unexplained `FirebaseError` attributed to whatever test is running.
 - Commit after every task (steps say when).
 
 ---
@@ -1496,11 +1498,10 @@ git commit -m "feat(app): session context, parent family pointer, and sign-in"
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDocFromServer } from 'firebase/firestore';
 import { auth, db } from '../firebase.js';
 import { initI18n } from '../i18n/index.js';
 import { signInTestParent, clearFirestoreData } from '../test/emulator.js';
-import { SessionProvider } from '../session/SessionContext.js';
 import { CreateFamily } from './CreateFamily.js';
 
 beforeAll(async () => { await initI18n('es'); });
@@ -1509,8 +1510,11 @@ beforeEach(async () => {
   await signInTestParent('founder');
 });
 
+// no SessionProvider: CreateFamily talks to auth and db directly, and a
+// provider here would subscribe to the family the instant the optimistic
+// pointer lands, producing a denied read before the batch reaches the server
 function renderScreen() {
-  return render(<SessionProvider><CreateFamily /></SessionProvider>);
+  return render(<CreateFamily />);
 }
 
 describe('CreateFamily', () => {
@@ -1521,16 +1525,20 @@ describe('CreateFamily', () => {
     await userEvent.click(screen.getByRole('button', { name: /crear familia/i }));
 
     const uid = auth.currentUser!.uid;
-    await waitFor(async () => {
-      const pointer = await getDoc(doc(db, 'parentIndex', uid));
-      expect(pointer.exists()).toBe(true);
+    // getDocFromServer, not getDoc: a cached read is satisfied by the buffered
+    // write and would pass before the batch has reached the server
+    const pointer = await waitFor(async () => {
+      const snap = await getDocFromServer(doc(db, 'parentIndex', uid));
+      expect(snap.exists()).toBe(true);
+      return snap;
     });
-    const familyId = (await getDoc(doc(db, 'parentIndex', uid))).get('familyId') as string;
-    const family = await getDoc(doc(db, 'families', familyId));
+
+    const familyId = pointer.get('familyId') as string;
+    const family = await getDocFromServer(doc(db, 'families', familyId));
     expect(family.get('name')).toBe('Talero');
     expect(family.get('currency')).toBe('COP');
     expect(family.get('deductionRules')).toEqual([]);
-    const member = await getDoc(doc(db, `families/${familyId}/members`, uid));
+    const member = await getDocFromServer(doc(db, `families/${familyId}/members`, uid));
     expect(member.get('role')).toBe('parent');
   });
 
@@ -1540,7 +1548,7 @@ describe('CreateFamily', () => {
     await userEvent.click(screen.getByRole('button', { name: /crear familia/i }));
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     const uid = auth.currentUser!.uid;
-    expect((await getDoc(doc(db, 'parentIndex', uid))).exists()).toBe(false);
+    expect((await getDocFromServer(doc(db, 'parentIndex', uid))).exists()).toBe(false);
   });
 });
 ```

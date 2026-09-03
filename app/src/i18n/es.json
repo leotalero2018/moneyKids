@@ -27,5 +27,14 @@
     "create": "Crear cuenta",
     "google": "Continuar con Google",
     "failed": "No pudimos entrar. Revisa el correo y la contraseña."
+  },
+  "createFamily": {
+    "title": "Crea tu familia",
+    "name": "Nombre de la familia",
+    "language": "Idioma",
+    "currency": "Moneda",
+    "permanent": "La moneda no se puede cambiar después.",
+    "submit": "Crear familia",
+    "nameRequired": "Escribe un nombre para la familia."
   }
 }
