@@ -62,5 +62,24 @@
     "inviteUsedBy": "Used by",
     "inviteUnused": "Unused",
     "language": "Language"
+  },
+  "activities": {
+    "title": "Activities",
+    "seed": "Load starter catalog",
+    "create": "Create activity",
+    "titleField": "Title",
+    "description": "Description",
+    "price": "Suggested price",
+    "category": "Category",
+    "repeatable": "Can be repeated",
+    "active": "Active",
+    "tooLong": "The title is too long (80 characters maximum).",
+    "badPrice": "Enter a valid price.",
+    "pillars": {
+      "learn": "Learn",
+      "courage": "Courage",
+      "ideas": "Ideas",
+      "help": "Help"
+    }
   }
 }

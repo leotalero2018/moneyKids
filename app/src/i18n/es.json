@@ -62,5 +62,24 @@
     "inviteUsedBy": "Usado por",
     "inviteUnused": "Sin usar",
     "language": "Idioma"
+  },
+  "activities": {
+    "title": "Actividades",
+    "seed": "Cargar catálogo inicial",
+    "create": "Crear actividad",
+    "titleField": "Título",
+    "description": "Descripción",
+    "price": "Precio sugerido",
+    "category": "Categoría",
+    "repeatable": "Se puede repetir",
+    "active": "Activa",
+    "tooLong": "El título es demasiado largo (máximo 80 caracteres).",
+    "badPrice": "Escribe un precio válido.",
+    "pillars": {
+      "learn": "Aprender",
+      "courage": "Valentía",
+      "ideas": "Ideas",
+      "help": "Ayudar"
+    }
   }
 }
