@@ -16,7 +16,9 @@
     "test:functions": "firebase emulators:exec --only firestore,auth --project money-kids-test \"npm test -w @money-kids/functions\"",
     "dev": "npm run dev -w @money-kids/app",
     "build:app": "npm run build -w @money-kids/app",
-    "test:app": "npm run build -w @money-kids/functions && firebase emulators:exec --only firestore,auth,functions --project money-kids-test \"npm test -w @money-kids/app\""
+    "test:app": "npm run build -w @money-kids/functions && firebase emulators:exec --only firestore,auth,functions --project money-kids-test \"npm test -w @money-kids/app\"",
+    "emulators": "npm run build -w @money-kids/functions && firebase emulators:start --only firestore,auth,functions,storage --project money-kids-test",
+    "seed:demo": "node scripts/seed-demo.mjs"
   },
   "devDependencies": {
     "firebase-tools": "^15.25.1"
