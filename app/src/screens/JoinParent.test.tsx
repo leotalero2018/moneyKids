@@ -16,7 +16,10 @@ describe('JoinParent', () => {
     render(<JoinParent />);
     await userEvent.type(screen.getByLabelText(/código/i), 'ABCD2345');
     await userEvent.click(screen.getByRole('button', { name: /unirme/i }));
-    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    // the banner appears only once the callable rejects, and the first cold
+    // invocation on a CI runner takes well over the 1s waitFor default
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument(),
+      { timeout: 8000 });
     const uid = auth.currentUser!.uid;
     expect((await getDocFromServer(doc(db, 'parentIndex', uid))).exists()).toBe(false);
   });

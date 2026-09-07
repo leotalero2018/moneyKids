@@ -9,6 +9,11 @@ on:
 
 jobs:
   claude-review:
+    # A PR from a fork gets no secrets and a read-only token, so the API call
+    # cannot work and `gh pr comment` would fail on permissions — a worse
+    # outcome than saying nothing. Compared by full_name rather than
+    # `fork == false`, because GitHub expressions coerce null and false alike.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,9 +35,30 @@ jobs:
         if: steps.diff.outputs.diff_size != '0'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::warning title=Claude review::ANTHROPIC_API_KEY is not set in this repository, so no review ran."
+            {
+              echo "## 🤖 Claude Code Review"
+              echo ""
+              echo "Skipped: \`ANTHROPIC_API_KEY\` was not available to this run."
+              echo ""
+              echo "Dependabot runs use a separate secret store, so this can happen"
+              echo "even when the secret exists. If it is genuinely unset, add it under"
+              echo "**Settings → Secrets and variables → Actions**:"
+              echo ""
+              echo '```bash'
+              echo "gh secret set ANTHROPIC_API_KEY --repo ${{ github.repository }}"
+              echo '```'
+            } > comment.md
+            gh pr comment ${{ github.event.pull_request.number }} \
+              --repo ${{ github.repository }} --body-file comment.md
+            exit 0
+          fi
+
           jq -n \
             --rawfile diff pr.diff \
             --arg title "$PR_TITLE" \
@@ -47,22 +73,55 @@ jobs:
               }]
             }' > payload.json
 
-          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+          # capture the status separately and never let curl's own exit code
+          # kill the step: `run:` blocks are bash -e, so a DNS or TLS failure
+          # in a command substitution aborts before any fallback can report it
+          HTTP=$(curl -sS -o response.json -w '%{http_code}' \
+            --max-time 180 --retry 3 --retry-connrefused \
+            https://api.anthropic.com/v1/messages \
             -H "x-api-key: $ANTHROPIC_API_KEY" \
             -H "anthropic-version: 2023-06-01" \
             -H "content-type: application/json" \
-            -d @payload.json)
+            -d @payload.json) || HTTP=000
+          RESPONSE=$(cat response.json 2>/dev/null || true)
 
-          # select the TEXT block by type: with adaptive thinking the first
-          # content block can be a thinking block, so .content[0].text is wrong
-          echo "$RESPONSE" | jq -r \
-            '[.content[]? | select(.type == "text") | .text] | join("\n")
-             | select(length > 0)
-             // ("Claude review failed: " + (.error.message // "unknown error"))' \
-            > review.md || echo "Claude review failed: could not parse response" > review.md
+          if [ "$HTTP" = "000" ]; then
+            echo "Claude review failed: could not reach the API (curl transport error)." > review.md
+          elif [ -z "$RESPONSE" ]; then
+            echo "Claude review failed: HTTP $HTTP with an empty body." > review.md
+          else
+
+            # Select the TEXT block by type: with adaptive thinking the first
+            # content block can be a thinking block, so .content[0].text is wrong.
+            #
+            # `. as $r` first, and the error branch reads $r rather than `.`:
+            # after join() the input is a STRING, so a fallback that reaches
+            # for .error.message aborts jq with "cannot index string" and
+            # buries the real reason. `objects` keeps it total even if the API
+            # ever returns valid JSON that is not an object.
+            echo "$RESPONSE" | jq -r \
+              '. as $r
+               | [ (($r | objects | .content) // [])[] | select(.type == "text") | .text ]
+               | join("\n")
+               | if (. | gsub("^\\s+|\\s+$"; "") | length) > 0 then .
+                 else "Claude review failed: "
+                      + (($r | objects | .error | objects | .type)
+                         // "unknown_error") + " — "
+                      + (($r | objects | .error | objects | .message)
+                         // "the response contained no text block")
+                 end' \
+              > review.md \
+              || printf 'Claude review failed: the API response was not JSON. First 400 bytes:\n\n    %s\n' \
+                   "$(printf '%s' "$RESPONSE" | head -c 400 | tr -d '`\r\n')" > review.md
+          fi
+
+          # make the outcome visible in the job, not only in the PR comment
+          if grep -q '^Claude review failed:' review.md; then
+            echo "::warning title=Claude review::$(head -1 review.md | sed 's/%/%25/g')"
+          fi
 
       - name: Post review comment
-        if: steps.diff.outputs.diff_size != '0'
+        if: steps.diff.outputs.diff_size != '0' && hashFiles('review.md') != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
