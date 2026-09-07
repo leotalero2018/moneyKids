@@ -102,6 +102,17 @@ describe('kids docs', () => {
     await assertFails(getDoc(doc(kdb, 'families/fam1/kids/k2')));
     await assertFails(deleteDoc(doc(parentCtx(env, 'p1').firestore(), 'families/fam1/kids/k1')));
   });
+  it('accepts a real age-mode override, and only a real one', async () => {
+    const pdb = parentCtx(env, 'p1').firestore();
+    await assertSucceeds(updateDoc(doc(pdb, 'families/fam1/kids/k1'), { ageModeOverride: '5-8' }));
+    await assertSucceeds(updateDoc(doc(pdb, 'families/fam1/kids/k1'), { ageModeOverride: null }));
+    await assertFails(updateDoc(doc(pdb, 'families/fam1/kids/k1'), { ageModeOverride: 'banana' }));
+    await assertFails(updateDoc(doc(pdb, 'families/fam1/kids/k1'), { ageModeOverride: 3 }));
+    // a kid cannot choose their own mode
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await assertFails(updateDoc(doc(kdb, 'families/fam1/kids/k1'), { ageModeOverride: '12-16' }));
+  });
+
   it('kid cannot list the whole kids collection but a query constrained to their own doc succeeds', async () => {
     const kdb = kidCtx(env, 'fam1', 'k1').firestore();
     await assertFails(getDocs(collection(kdb, 'families/fam1/kids')));

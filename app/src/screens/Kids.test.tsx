@@ -63,6 +63,26 @@ describe('Kids', () => {
     });
   });
 
+  it('sets and clears the age-mode override', async () => {
+    await seedDoc(`families/${familyId}/kids/k1`, {
+      name: 'Mia', birthYear: 2016, deductionsEnabled: false,
+      spendableBalance: 0, savingsBalance: 0,
+    });
+    renderScreen();
+    const card = await screen.findByRole('group', { name: /Mia/ });
+    await userEvent.selectOptions(within(card).getByLabelText(/modo por edad/i), '5-8');
+    await waitFor(async () => {
+      const kids = await getDocsFromServer(collection(db, `families/${familyId}/kids`));
+      expect(kids.docs[0]!.get('ageModeOverride')).toBe('5-8');
+    }, { timeout: 5000 });
+    // clearing it means "follow the birth year", stored as an explicit null
+    await userEvent.selectOptions(within(card).getByLabelText(/modo por edad/i), '');
+    await waitFor(async () => {
+      const kids = await getDocsFromServer(collection(db, `families/${familyId}/kids`));
+      expect(kids.docs[0]!.get('ageModeOverride')).toBeNull();
+    }, { timeout: 5000 });
+  });
+
   it('shows a join code from the callable and can revoke access', async () => {
     await seedDoc(`families/${familyId}/kids/k1`, {
       name: 'Mia', birthYear: 2016, deductionsEnabled: false,

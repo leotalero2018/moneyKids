@@ -768,13 +768,11 @@ export function JoinKid() {
   const { t } = useTranslation();
   const [code, setCode] = useState('');
   const [failed, setFailed] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function join() {
     setBusy(true);
     setFailed(false);
-    setError(null);
     try {
       // uppercase here so a kid typing lowercase still works; the callable
       // validates the exact alphabet and rejects anything else
@@ -793,7 +791,6 @@ export function JoinKid() {
       <h1>{t('kidJoin.title')}</h1>
       <p>{t('kidJoin.help')}</p>
       {failed && <ErrorBanner message={t('kidJoin.failed')} />}
-      {error && <ErrorBanner message={error} />}
       <label htmlFor="kid-code">{t('kidJoin.code')}</label>
       <input
         id="kid-code" value={code} autoCapitalize="characters" autoComplete="off"
@@ -3661,7 +3658,7 @@ export class KidCacheNotClearedError extends Error {
 
 Wire it into **both** ends of the switch — the module is useless unbound:
 
-In `JoinKid.tsx`, reset before redeeming, because a code may be for a different kid than the one already signed in on this device:
+In `JoinKid.tsx`, add a second error slot — `const [error, setError] = useState<string | null>(null);`, cleared at the top of `join()` and rendered as its own `<ErrorBanner message={error} />` — then reset before redeeming, because a code may be for a different kid than the one already signed in on this device. (The slot lives here rather than in Task 2 so that task ships no setter nothing calls.)
 ```tsx
       // a different kid may be taking over this device; start from a cache
       // that has never seen the previous kid's documents. If the erasure

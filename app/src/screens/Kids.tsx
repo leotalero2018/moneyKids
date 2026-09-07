@@ -17,6 +17,7 @@ interface Kid {
   id: string;
   name: string;
   birthYear: number;
+  ageModeOverride?: '5-8' | '8-12' | '12-16' | null;
   deductionsEnabled: boolean;
   spendableBalance: number;
   savingsBalance: number;
@@ -107,6 +108,21 @@ export function Kids() {
             />
             {t('kids.deductions')}
           </label>
+          <label htmlFor={`mode-${kid.id}`}>{t('kids.ageMode')}</label>
+          <select
+            id={`mode-${kid.id}`}
+            value={kid.ageModeOverride ?? ''}
+            onChange={(e) => updateDoc(doc(db, `families/${familyId}/kids/${kid.id}`), {
+              // '' means "follow the birth year", stored as null so the field
+              // is present and explicit rather than absent and ambiguous
+              ageModeOverride: e.target.value === '' ? null : e.target.value,
+            })}
+          >
+            <option value="">{t('kids.ageModeAuto')}</option>
+            <option value="5-8">5–8</option>
+            <option value="8-12">8–12</option>
+            <option value="12-16">12–16</option>
+          </select>
           <div className={styles.actions}>
             <Button variant="secondary" onClick={() => showCode(kid.id)}>{t('kids.code')}</Button>
             <Button variant="danger" onClick={() => revoke(kid.id)}>{t('kids.revoke')}</Button>

@@ -46,7 +46,9 @@
     "code": "Show code",
     "codeHelp": "Enter this code on the kid's device.",
     "revoke": "Revoke access",
-    "invalidYear": "Enter a year between 2005 and this year."
+    "invalidYear": "Enter a year between 2005 and this year.",
+    "ageMode": "Age mode",
+    "ageModeAuto": "By age"
   },
   "joinParent": {
     "title": "Join a family",
@@ -139,5 +141,13 @@
     "wrong": "That PIN is not correct.",
     "invalid": "The PIN must be 4 to 8 digits.",
     "lock": "Lock the adult view"
+  },
+  "kidJoin": {
+    "title": "Sign in with your code",
+    "help": "Ask a grown-up for the code.",
+    "code": "Code",
+    "submit": "Go",
+    "failed": "That code does not work. Ask for a new one.",
+    "reopen": "Close the app and open it again to sign in with a different code."
   }
 }

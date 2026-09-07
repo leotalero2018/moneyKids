@@ -46,7 +46,9 @@
     "code": "Mostrar código",
     "codeHelp": "Escribe este código en el dispositivo del niño.",
     "revoke": "Revocar acceso",
-    "invalidYear": "Escribe un año entre 2005 y este año."
+    "invalidYear": "Escribe un año entre 2005 y este año.",
+    "ageMode": "Modo por edad",
+    "ageModeAuto": "Según la edad"
   },
   "joinParent": {
     "title": "Unirme a una familia",
@@ -139,5 +141,13 @@
     "wrong": "Ese PIN no es correcto.",
     "invalid": "El PIN debe tener entre 4 y 8 números.",
     "lock": "Bloquear vista de adulto"
+  },
+  "kidJoin": {
+    "title": "Entrar con tu código",
+    "help": "Pídele el código a tu mamá o papá.",
+    "code": "Código",
+    "submit": "Entrar",
+    "failed": "Ese código no sirve. Pide uno nuevo.",
+    "reopen": "Cierra la app y ábrela otra vez para entrar con otro código."
   }
 }

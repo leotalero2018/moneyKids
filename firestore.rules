@@ -45,13 +45,23 @@ service cloud.firestore {
       }
 
       match /kids/{kidId} {
+        function ageModeOverrideOk() {
+          // optional, and either null (follow the birth year) or a real mode.
+          // An unvalidated value reaches data-age-mode, matches no token
+          // block, and silently degrades to the 8-12 baseline.
+          return !request.resource.data.keys().hasAny(['ageModeOverride'])
+            || request.resource.data.ageModeOverride == null
+            || request.resource.data.ageModeOverride in ['5-8', '8-12', '12-16'];
+        }
         allow get, list: if isFamilyParent() || (isFamilyKid() && kidId == authKidId());
         allow create: if isFamilyParent()
           && request.resource.data.spendableBalance == 0
-          && request.resource.data.savingsBalance == 0;
+          && request.resource.data.savingsBalance == 0
+          && ageModeOverrideOk();
         allow update: if isFamilyParent()
           && !request.resource.data.diff(resource.data).affectedKeys()
-               .hasAny(['spendableBalance', 'savingsBalance']);
+               .hasAny(['spendableBalance', 'savingsBalance'])
+          && ageModeOverrideOk();
         allow delete: if false;
       }
 
