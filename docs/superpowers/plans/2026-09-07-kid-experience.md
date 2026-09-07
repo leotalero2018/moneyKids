@@ -97,13 +97,26 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import { doc, setDoc, writeBatch } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
-import { parentFb, kidFb } from '../firebase.js';
+import { parentFb, kidBundle } from '../firebase.js';
+
+// kidBundle() rather than a frozen import: Task 11 replaces the kid instance
+// when the kid identity changes, so a module-level const would go stale
+const kidFb = kidBundle();
 import { FirebaseProvider } from './FirebaseContext.js';
 import { useDoc } from '../hooks/useDoc.js';
 import { clearFirestoreData, signInTestParent } from '../test/emulator.js';
 import type { ReactNode } from 'react';
 
-beforeAll(async () => { await signInTestParent('twoinst'); });
+beforeAll(async () => {
+  // sign BOTH out first, then sign the parent in: this test asserts the kid
+  // instance is anonymous, and that must not depend on which tests ran before
+  // it. (Cross-file leakage is already unlikely — vitest isolates modules per
+  // file and jsdom has no localStorage, so Firebase Auth falls back to
+  // in-memory persistence — but within-file order and future edits are real.)
+  await signOut(parentFb.auth);
+  await signOut(kidFb.auth);
+  await signInTestParent('twoinst');
+});
 beforeEach(async () => { await clearFirestoreData(); });
 
 describe('two Firebase instances', () => {
@@ -194,12 +207,40 @@ function bundle(label: 'parent' | 'kid'): FirebaseBundle {
 }
 
 export const parentFb = bundle('parent');
-export const kidFb = bundle('kid');
+
+/**
+ * The kid bundle is REPLACEABLE, not frozen.
+ *
+ * Firestore's persistent cache is keyed by (app name, project, database) and
+ * knows nothing about users: signing out does not clear it, and a cached read
+ * is served locally without any rules evaluation, because rules run on the
+ * server. On a shared device that means Kid B could read documents Kid A's
+ * session cached. So a kid identity change must destroy the cache and rebuild
+ * the instance — which is impossible if the bundle is a const the whole app
+ * imported. Task 11 implements the reset; this is the seam it needs.
+ */
+let currentKid = bundle('kid');
+export function kidBundle(): FirebaseBundle { return currentKid; }
+export function replaceKidBundle(next: FirebaseBundle): void { currentKid = next; }
+export function newKidBundle(): FirebaseBundle { return bundle('kid', kidAppGeneration()); }
 
 // the original singleton names, bound to the parent bundle: every parent
 // screen and test written in Plan 2 keeps working with no edit
 export const { auth, db, fns, storage } = parentFb;
 ```
+
+`bundle()` therefore takes an optional generation suffix, because `initializeApp` refuses a name that is already live:
+```ts
+let generation = 0;
+function kidAppGeneration(): number { return ++generation; }
+
+function bundle(label: 'parent' | 'kid', gen = 0): FirebaseBundle {
+  const app = initializeApp(config, gen === 0 ? label : `${label}-${gen}`);
+  // ...as above
+}
+```
+
+**`kidFb` in this plan's later tasks means `kidBundle()`.** Tests may keep a local `const kidFb = kidBundle()` at the top of a file *only* if that file never resets the kid session; the reset tests must call `kidBundle()` after each reset.
 
 `app/src/firebase/FirebaseContext.tsx`:
 ```tsx
@@ -354,7 +395,7 @@ git commit -m "refactor(app): two Firebase instances behind a context"
 
 **Files:**
 - Create: `app/src/kid/KidSessionContext.tsx`, `app/src/kid/KidSessionContext.test.tsx`, `app/src/kid/ageMode.ts`, `app/src/kid/ageMode.test.ts`, `app/src/screens/kid/JoinKid.tsx`, `app/src/screens/kid/JoinKid.test.tsx`
-- Modify: `app/src/i18n/*.json`
+- Modify: `app/src/i18n/*.json`, `firestore.rules`, `packages/rules-tests/src/family.test.ts`, `app/src/screens/Kids.tsx`, `app/src/screens/Kids.test.tsx`
 
 **Interfaces:**
 - Consumes: `mintKidToken` (Plan 1), `kidFb`, `useDoc`.
@@ -394,6 +435,12 @@ describe('ageModeFor', () => {
     expect(ageModeFor(2020, '12-16', today)).toBe('12-16');
     expect(ageModeFor(2011, '5-8', today)).toBe('5-8');
   });
+  it('ignores an override that is not a real mode', () => {
+    // it arrives from a Firestore document, so it is untrusted: returning it
+    // verbatim would stamp a data-age-mode no CSS block matches
+    expect(ageModeFor(2016, 'grown-up' as never, today)).toBe('8-12');
+    expect(ageModeFor(2016, '' as never, today)).toBe('8-12');
+  });
 });
 ```
 
@@ -409,13 +456,18 @@ export const AGE_MODES: AgeMode[] = ['5-8', '8-12', '12-16'];
  * The spec's bands overlap at 8 and 12. The older mode wins there: pushing a
  * kid who has just turned 12 back into the 8-12 screens reads as a demotion,
  * and a parent can always override per kid.
+ *
+ * The override comes from a Firestore document, so it is untrusted input: an
+ * unrecognised value must fall back to the birth-year band rather than be
+ * returned verbatim, or it reaches `data-age-mode`, matches no token block,
+ * and silently degrades to the 8-12 baseline with no way to notice.
  */
 export function ageModeFor(
   birthYear: number,
   override?: AgeMode | null,
   today: Date = new Date(),
 ): AgeMode {
-  if (override) return override;
+  if (override && AGE_MODES.includes(override)) return override;
   const age = today.getUTCFullYear() - birthYear;
   if (age >= 12) return '12-16';
   if (age >= 8) return '8-12';
@@ -431,7 +483,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { doc, writeBatch } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
-import { parentFb, kidFb } from '../firebase.js';
+import { parentFb, kidBundle } from '../firebase.js';
+
+// kidBundle() rather than a frozen import: Task 11 replaces the kid instance
+// when the kid identity changes, so a module-level const would go stale
+const kidFb = kidBundle();
 import { callables } from '../lib/callables.js';
 import { clearFirestoreData, seedDoc, signInTestParent, signInTestKid } from '../test/emulator.js';
 import { KidSessionProvider, useKidSession } from './KidSessionContext.js';
@@ -499,7 +555,9 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { doc, writeBatch } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
-import { parentFb, kidFb } from '../../firebase.js';
+import { parentFb, kidBundle } from '../../firebase.js';
+
+const kidFb = kidBundle();
 import { callables } from '../../lib/callables.js';
 import { initI18n } from '../../i18n/index.js';
 import { clearFirestoreData, seedDoc, signInTestParent } from '../../test/emulator.js';
@@ -584,7 +642,9 @@ Add to `es.json` (mirror in `en.json`):
 ```tsx
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { onIdTokenChanged } from 'firebase/auth';
-import { kidFb } from '../firebase.js';
+import { kidBundle } from '../firebase.js';
+
+const kidFb = kidBundle();
 import { FirebaseProvider } from '../firebase/FirebaseContext.js';
 import { useDoc } from '../hooks/useDoc.js';
 import { ageModeFor, type AgeMode } from './ageMode.js';
@@ -641,6 +701,9 @@ export function KidSessionProvider({ children }: { children: ReactNode }) {
   const [claims, setClaims] = useState<{ familyId: string; kidId: string } | null>(null);
   const [resolved, setResolved] = useState(false);
 
+  // read the bundle on every render: Task 11 swaps it on identity change
+  const kidFb = kidBundle();
+
   useEffect(() => onIdTokenChanged(kidFb.auth, async (user) => {
     if (!user) {
       setClaims(null);
@@ -655,7 +718,7 @@ export function KidSessionProvider({ children }: { children: ReactNode }) {
       typeof familyId === 'string' && typeof kidId === 'string' ? { familyId, kidId } : null,
     );
     setResolved(true);
-  }), []);
+  }), [kidFb.auth]);
 
   // every read below must go through the KID instance
   return (
@@ -683,7 +746,9 @@ export function useKidSession(): KidSession {
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { signInWithCustomToken } from 'firebase/auth';
-import { kidFb } from '../../firebase.js';
+import { kidBundle } from '../../firebase.js';
+
+const kidFb = kidBundle();
 import { callables } from '../../lib/callables.js';
 import { Button } from '../../components/Button.js';
 import { ErrorBanner } from '../../components/ErrorBanner.js';
@@ -701,8 +766,9 @@ export function JoinKid() {
     try {
       // uppercase here so a kid typing lowercase still works; the callable
       // validates the exact alphabet and rejects anything else
-      const { data } = await callables(kidFb).mintKidToken({ code: code.trim().toUpperCase() });
-      await signInWithCustomToken(kidFb.auth, data.token);
+      const fb = kidBundle();
+      const { data } = await callables(fb).mintKidToken({ code: code.trim().toUpperCase() });
+      await signInWithCustomToken(fb.auth, data.token);
     } catch {
       setFailed(true);
     } finally {
@@ -731,11 +797,86 @@ export function JoinKid() {
 Run: `npm run test:app && npm run typecheck -w @money-kids/app`
 Expected: all PASS. If the kid's reads are denied, check the claims actually arrived: a custom token's claims appear only after `getIdTokenResult()`, and a stale token from a previous test can linger — hence the `signOut(kidFb.auth)` in `beforeEach`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Make the override actually settable — and validated**
+
+Reading an override nothing can write is dead code. Two gaps to close.
+
+**The rules accept anything today.** `kids` `allow update` blocks only the two balance keys, so a parent could write `ageModeOverride: 'banana'`. Add the failing test to `packages/rules-tests/src/family.test.ts`, inside `describe('kids docs', ...)`:
+```ts
+  it('accepts a real age-mode override, and only a real one', async () => {
+    const pdb = parentCtx(env, 'p1').firestore();
+    await assertSucceeds(updateDoc(doc(pdb, 'families/fam1/kids/k1'), { ageModeOverride: '5-8' }));
+    await assertSucceeds(updateDoc(doc(pdb, 'families/fam1/kids/k1'), { ageModeOverride: null }));
+    await assertFails(updateDoc(doc(pdb, 'families/fam1/kids/k1'), { ageModeOverride: 'banana' }));
+    await assertFails(updateDoc(doc(pdb, 'families/fam1/kids/k1'), { ageModeOverride: 3 }));
+    // a kid cannot choose their own mode
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await assertFails(updateDoc(doc(kdb, 'families/fam1/kids/k1'), { ageModeOverride: '12-16' }));
+  });
+```
+Run `npm run test:rules` → FAIL, then add the check to the `kids` match block:
+```
+        function ageModeOverrideOk() {
+          // optional, and either null (follow the birth year) or a real mode
+          return !request.resource.data.keys().hasAny(['ageModeOverride'])
+            || request.resource.data.ageModeOverride == null
+            || request.resource.data.ageModeOverride in ['5-8', '8-12', '12-16'];
+        }
+```
+chained onto both `create` and `update`. Run again → PASS.
+
+**Then give the parent the control.** In `app/src/screens/Kids.tsx`, add a select to each kid card, and to the i18n files:
+```json
+  "kids": { "ageMode": "Modo por edad", "ageModeAuto": "Según la edad" }
+```
+(`en`: `"ageMode": "Age mode", "ageModeAuto": "By age"`)
+```tsx
+          <label htmlFor={`mode-${kid.id}`}>{t('kids.ageMode')}</label>
+          <select
+            id={`mode-${kid.id}`}
+            value={kid.ageModeOverride ?? ''}
+            onChange={(e) => updateDoc(doc(db, `families/${familyId}/kids/${kid.id}`), {
+              // '' means "follow the birth year", stored as null so the field
+              // is present and explicit rather than absent and ambiguous
+              ageModeOverride: e.target.value === '' ? null : e.target.value,
+            })}
+          >
+            <option value="">{t('kids.ageModeAuto')}</option>
+            <option value="5-8">5–8</option>
+            <option value="8-12">8–12</option>
+            <option value="12-16">12–16</option>
+          </select>
+```
+with `ageModeOverride?: '5-8' | '8-12' | '12-16' | null` added to that screen's `Kid` interface, and a test in `Kids.test.tsx`:
+```tsx
+  it('sets and clears the age-mode override', async () => {
+    await seedDoc(`families/${familyId}/kids/k1`, {
+      name: 'Mia', birthYear: 2016, deductionsEnabled: false,
+      spendableBalance: 0, savingsBalance: 0,
+    });
+    renderScreen();
+    const card = await screen.findByRole('group', { name: /Mia/ });
+    await userEvent.selectOptions(within(card).getByLabelText(/modo por edad/i), '5-8');
+    await waitFor(async () => {
+      const kids = await getDocsFromServer(collection(db, `families/${familyId}/kids`));
+      expect(kids.docs[0]!.get('ageModeOverride')).toBe('5-8');
+    }, { timeout: 5000 });
+    await userEvent.selectOptions(within(card).getByLabelText(/modo por edad/i), '');
+    await waitFor(async () => {
+      const kids = await getDocsFromServer(collection(db, `families/${familyId}/kids`));
+      expect(kids.docs[0]!.get('ageModeOverride')).toBeNull();
+    }, { timeout: 5000 });
+  });
+```
+
+- [ ] **Step 8: Verify and commit**
+
+Run: `npm run test:app && npm run test:rules && npm run typecheck`
+Expected: all PASS.
 
 ```bash
-git add app
-git commit -m "feat(app): kid session from a redeemed join code"
+git add app firestore.rules packages/rules-tests
+git commit -m "feat(app): kid session from a join code, with a settable age-mode override"
 ```
 
 ---
@@ -764,7 +905,11 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { doc, writeBatch } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
-import { parentFb, kidFb } from '../firebase.js';
+import { parentFb, kidBundle } from '../firebase.js';
+
+// kidBundle() rather than a frozen import: Task 11 replaces the kid instance
+// when the kid identity changes, so a module-level const would go stale
+const kidFb = kidBundle();
 import { callables } from '../lib/callables.js';
 import { initI18n } from '../i18n/index.js';
 import { clearFirestoreData, seedDoc, signInTestParent, signInTestKid } from '../test/emulator.js';
@@ -987,7 +1132,9 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { doc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
-import { parentFb, kidFb } from '../../firebase.js';
+import { parentFb, kidBundle } from '../../firebase.js';
+
+const kidFb = kidBundle();
 import { callables } from '../../lib/callables.js';
 import { initI18n } from '../../i18n/index.js';
 import { clearFirestoreData, seedDoc, signInTestParent, signInTestKid } from '../../test/emulator.js';
@@ -1051,6 +1198,39 @@ describe('KidHome', () => {
     await waitFor(() => expect(screen.getByTestId('spendable')).toBeInTheDocument());
     // nothing is being withheld, so a second balance would only confuse
     expect(screen.queryByTestId('savings')).toBeNull();
+  });
+
+  it('hides a one-time activity the kid has already had approved', async () => {
+    // the spec asks for this as a courtesy: the approval function is what
+    // actually prevents double payment, but offering an activity that can
+    // only be refused is a bad screen
+    const code = await seedAll(true);
+    await seedDoc(`families/${familyId}/activities/once1`, {
+      titleEs: 'Solo una vez', titleEn: 'One time only', descriptionEs: '', descriptionEn: '',
+      suggestedPrice: 2000, category: 'ideas', repeatable: false, active: true,
+      createdBy: 'p1', createdAt: new Date(),
+    });
+    await seedDoc(`families/${familyId}/invoices/done1`, {
+      kidId: 'k1', activityId: 'once1', description: 'ya', photoPaths: [],
+      status: 'approved', requestedAmount: 2000, approvedAmount: 2000, netAmount: 2000,
+      deductions: [], eventCount: 2, createdAt: new Date(),
+    });
+    await signInTestKid(code);
+    renderHome();
+    expect(await screen.findByRole('heading', { name: /Lee un libro/ })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Solo una vez/ })).toBeNull();
+  });
+
+  it('keeps showing a repeatable activity the kid has already been paid for', async () => {
+    const code = await seedAll(true);
+    await seedDoc(`families/${familyId}/invoices/done2`, {
+      kidId: 'k1', activityId: 'act1', description: 'ya', photoPaths: [],
+      status: 'approved', requestedAmount: 5000, approvedAmount: 5000, netAmount: 5000,
+      deductions: [], eventCount: 2, createdAt: new Date(),
+    });
+    await signInTestKid(code);
+    renderHome();
+    expect(await screen.findByRole('heading', { name: /Lee un libro/ })).toBeInTheDocument();
   });
 
   it('lists only active activities, with their suggested price', async () => {
@@ -1141,13 +1321,14 @@ interface Activity {
   id: string;
   titleEs: string; titleEn: string;
   descriptionEs: string; descriptionEn: string;
-  suggestedPrice: number; category: Pillar; active: boolean;
+  suggestedPrice: number; category: Pillar;
+  repeatable: boolean; active: boolean;
 }
 
 export function KidHome() {
   const { t, i18n } = useTranslation();
   const { db } = useFirebase();
-  const { familyId, kid, status } = useKidSession();
+  const { familyId, kidId, kid, status } = useKidSession();
   const isEs = i18n.language === 'es';
   const activities = useCollection<Activity>(
     familyId
@@ -1155,7 +1336,25 @@ export function KidHome() {
       : null,
   );
 
+  // the kid's own invoices, to hide one-time activities they have already had
+  // approved. Reusing the kidId-constrained query needs no extra index, and a
+  // kid's invoice list is small; a second (kidId, status) index would buy
+  // nothing here. The approval function is still the real guard — this is the
+  // courtesy the spec asks for, not an invariant.
+  const mine = useCollection<{ activityId: string | null; status: string }>(
+    familyId && kidId
+      ? query(collection(db, `families/${familyId}/invoices`), where('kidId', '==', kidId))
+      : null,
+  );
+  const usedOneTime = new Set(
+    mine.docs.filter((i) => i.status === 'approved' && i.activityId).map((i) => i.activityId!),
+  );
+
   if (status !== 'ready' || !kid) return <div className={styles.screen}><Spinner /></div>;
+
+  const offered = activities.docs.filter(
+    (activity) => activity.repeatable || !usedOneTime.has(activity.id),
+  );
 
   return (
     <div className={styles.screen}>
@@ -1180,8 +1379,8 @@ export function KidHome() {
       <Link to="/kid/new" className={styles.freeForm}>{t('kidHome.freeForm')}</Link>
 
       {activities.loading && <Spinner />}
-      {!activities.loading && activities.docs.length === 0 && <p>{t('kidHome.empty')}</p>}
-      {activities.docs.map((activity) => (
+      {!activities.loading && offered.length === 0 && <p>{t('kidHome.empty')}</p>}
+      {offered.map((activity) => (
         <Link
           key={activity.id}
           to={`/kid/new?activity=${activity.id}`}
@@ -1308,7 +1507,11 @@ Kid history is `where('kidId','==',own)` ordered by `createdAt` — a composite 
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { doc, getDocFromServer, writeBatch } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
-import { parentFb, kidFb } from '../firebase.js';
+import { parentFb, kidBundle } from '../firebase.js';
+
+// kidBundle() rather than a frozen import: Task 11 replaces the kid instance
+// when the kid identity changes, so a module-level const would go stale
+const kidFb = kidBundle();
 import { callables } from './callables.js';
 import { clearFirestoreData, seedDoc, signInTestParent, signInTestKid } from '../test/emulator.js';
 import { createDraft, updateDraft, deleteDraft } from './kidInvoice.js';
@@ -1569,9 +1772,10 @@ git commit -m "feat(app): kid invoice drafts, with an optional pillar category"
 - Consumes: `createDraft`/`updateDraft`, `parseMajor`, the Storage rules from Plan 1.
 - Produces:
   - `compressImage(file: File, maxEdge?: number): Promise<Blob>` — canvas resize to ≤ 1200 px on the long edge, JPEG quality 0.8, and **never returns something larger than the 5 MB Storage limit**
-  - `uploadInvoicePhoto(fb, { familyId, kidId, invoiceId, file }): Promise<string>` — compresses, uploads, returns the storage path
+  - `uploadInvoicePhoto(fb, { familyId, kidId, invoiceId, file }): Promise<string>` — compresses, uploads under a **random** file name, records the path, returns it
+  - `removeInvoicePhoto(fb, { familyId, invoiceId, path }): Promise<void>` — detaches the path, then deletes the object
   - `<NewInvoice />` at `/kid/new` (accepts `?activity=<id>` to prefill from the board)
-  - `<InvoicePhotos />` — thumbnails, add, remove, and the 8-photo cap surfaced in the UI
+  - `<InvoicePhotos />` — thumbnails from `getDownloadURL`, add, remove, and the 8-photo cap surfaced in the UI
 
 - [ ] **Step 1: Write the failing compression tests**
 
@@ -1663,8 +1867,8 @@ Run: `npm run test:app` → FAIL (no `photos.js`).
 
 `app/src/lib/photos.ts`:
 ```ts
-import { ref, uploadBytes } from 'firebase/storage';
-import { arrayUnion, doc, updateDoc } from 'firebase/firestore';
+import { deleteObject, ref, uploadBytes } from 'firebase/storage';
+import { arrayRemove, arrayUnion, doc, updateDoc } from 'firebase/firestore';
 import type { FirebaseBundle } from '../firebase.js';
 
 export const MAX_EDGE = 1200;               // the spec's ~1200px
@@ -1724,16 +1928,44 @@ export async function compressImage(file: File, maxEdge = MAX_EDGE): Promise<Blo
  * only works on a draft that has already reached the server.
  */
 export async function uploadInvoicePhoto(fb: FirebaseBundle, args: {
-  familyId: string; kidId: string; invoiceId: string; file: File; index: number;
+  familyId: string; kidId: string; invoiceId: string; file: File;
 }): Promise<string> {
   const blob = await compressImage(args.file);
-  const path =
-    `families/${args.familyId}/kids/${args.kidId}/invoices/${args.invoiceId}/${args.index}.jpg`;
+  // a RANDOM name, never the array length: after a removal the length repeats
+  // an index that is still in use, and the next upload would silently
+  // overwrite an existing photo
+  const path = `families/${args.familyId}/kids/${args.kidId}/invoices/${args.invoiceId}`
+    + `/${crypto.randomUUID()}.jpg`;
   await uploadBytes(ref(fb.storage, path), blob, { contentType: 'image/jpeg' });
-  await updateDoc(doc(fb.db, `families/${args.familyId}/invoices/${args.invoiceId}`), {
-    photoPaths: arrayUnion(path),
-  });
+  try {
+    await updateDoc(doc(fb.db, `families/${args.familyId}/invoices/${args.invoiceId}`), {
+      photoPaths: arrayUnion(path),
+    });
+  } catch (e) {
+    // the object is up but unreferenced, and nothing else will ever find it.
+    // Best-effort clean-up, then report the failure: an orphan the user
+    // cannot see is worse than a retry they can.
+    await deleteObject(ref(fb.storage, path)).catch(() => undefined);
+    throw e;
+  }
   return path;
+}
+
+/**
+ * Detaches first, then deletes.
+ *
+ * That order matters: if the delete fails, the invoice no longer points at a
+ * missing object, and the leftover file is invisible rather than broken. The
+ * reverse order would leave a path on the invoice with nothing behind it, and
+ * every reader — including the parent's review screen — would show a gap.
+ */
+export async function removeInvoicePhoto(fb: FirebaseBundle, args: {
+  familyId: string; invoiceId: string; path: string;
+}): Promise<void> {
+  await updateDoc(doc(fb.db, `families/${args.familyId}/invoices/${args.invoiceId}`), {
+    photoPaths: arrayRemove(args.path),
+  });
+  await deleteObject(ref(fb.storage, args.path)).catch(() => undefined);
 }
 ```
 
@@ -1747,7 +1979,9 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { collection, doc, getDocsFromServer, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
-import { parentFb, kidFb } from '../../firebase.js';
+import { parentFb, kidBundle } from '../../firebase.js';
+
+const kidFb = kidBundle();
 import { callables } from '../../lib/callables.js';
 import { initI18n } from '../../i18n/index.js';
 import { clearFirestoreData, seedDoc, signInTestParent, signInTestKid } from '../../test/emulator.js';
@@ -1886,11 +2120,12 @@ Add to `es.json` (mirror in `en.json`):
     "addPhoto": "Agregar foto",
     "removePhoto": "Quitar",
     "photoLimit": "Ya tienes 8 fotos.",
-    "photoFailed": "Esa foto no se pudo subir. Intenta otra vez.",
+    "photoFailed": "Esa foto no se pudo subir. Intenta otra vez. Necesitas internet para subir fotos.",
+    "needPhoto": "Agrega una foto de lo que hiciste para poder enviarla.",
     "saved": "Guardada. Ahora puedes agregar fotos o enviarla."
   }
 ```
-(`en`: `"title": "New invoice", "what": "What did you do?", "whatHint": "One sentence is fine.", "howMuch": "How much is it worth?", "pickCategory": "What kind was it?", "pickPrice": "How much is it worth?", "save": "Save", "send": "Send to a grown-up", "needDescription": "Tell me what you did.", "badAmount": "Enter a valid price.", "photos": "Photos", "addPhoto": "Add photo", "removePhoto": "Remove", "photoLimit": "You already have 8 photos.", "photoFailed": "That photo could not be uploaded. Try again.", "saved": "Saved. Now you can add photos or send it."`)
+(`en`: `"title": "New invoice", "what": "What did you do?", "whatHint": "One sentence is fine.", "howMuch": "How much is it worth?", "pickCategory": "What kind was it?", "pickPrice": "How much is it worth?", "save": "Save", "send": "Send to a grown-up", "needDescription": "Tell me what you did.", "badAmount": "Enter a valid price.", "photos": "Photos", "addPhoto": "Add photo", "removePhoto": "Remove", "photoLimit": "You already have 8 photos.", "photoFailed": "That photo could not be uploaded. Try again. You need a connection to upload photos.", "needPhoto": "Add a photo of what you did so you can send it.", "saved": "Saved. Now you can add photos or send it."`)
 
 `app/src/screens/kid/NewInvoice.tsx` — one component, one behavioral branch:
 ```tsx
@@ -1932,6 +2167,12 @@ export function NewInvoice() {
   const [busy, setBusy] = useState(false);
 
   const photoFirst = ageMode === '5-8';
+  const [photoCount, setPhotoCount] = useState(0);
+  // at 5-8 the kid types nothing — the tapped pillar stands in for words — so
+  // an invoice with no photo carries neither description nor evidence and is
+  // not reviewable. The photo is the description in this mode, so sending
+  // without one is blocked rather than merely discouraged.
+  const canSend = !photoFirst || photoCount > 0;
 
   // prefill from the activity the kid tapped on the board
   useEffect(() => {
@@ -2078,25 +2319,49 @@ export function NewInvoice() {
 
 `app/src/screens/kid/InvoicePhotos.tsx`:
 ```tsx
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { getDownloadURL, ref } from 'firebase/storage';
 import { useFirebase } from '../../firebase/FirebaseContext.js';
 import { useDoc } from '../../hooks/useDoc.js';
-import { uploadInvoicePhoto, MAX_PHOTOS } from '../../lib/photos.js';
+import { uploadInvoicePhoto, removeInvoicePhoto, MAX_PHOTOS } from '../../lib/photos.js';
 import { Button } from '../../components/Button.js';
 import { ErrorBanner } from '../../components/ErrorBanner.js';
+import styles from './NewInvoice.module.css';
 
-export function InvoicePhotos(
-  { familyId, kidId, invoiceId }: { familyId: string; kidId: string; invoiceId: string },
-) {
+export function InvoicePhotos({ familyId, kidId, invoiceId, onCountChange }: {
+  familyId: string; kidId: string; invoiceId: string;
+  onCountChange?: (count: number) => void;
+}) {
   const { t } = useTranslation();
   const fb = useFirebase();
   const invoice = useDoc<{ photoPaths: string[] }>(`families/${familyId}/invoices/${invoiceId}`);
   const input = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [urls, setUrls] = useState<Record<string, string>>({});
 
   const paths = invoice.data?.photoPaths ?? [];
+
+  // the count drives the 5-8 send gate, so it is reported upward from the
+  // one place that actually knows it: the invoice document
+  useEffect(() => { onCountChange?.(paths.length); }, [paths.length, onCountChange]);
+
+  // thumbnails: resolve each path once, and forget any that has been removed
+  useEffect(() => {
+    let live = true;
+    void Promise.all(paths.map(async (path) => {
+      if (urls[path]) return [path, urls[path]!] as const;
+      const url = await getDownloadURL(ref(fb.storage, path)).catch(() => null);
+      return [path, url] as const;
+    })).then((pairs) => {
+      if (!live) return;
+      setUrls(Object.fromEntries(
+        pairs.filter((pair): pair is readonly [string, string] => pair[1] !== null),
+      ));
+    });
+    return () => { live = false; };
+  }, [paths.join('|'), fb.storage]);
 
   async function add(file: File) {
     if (paths.length >= MAX_PHOTOS) {
@@ -2106,7 +2371,19 @@ export function InvoicePhotos(
     setBusy(true);
     setError(null);
     try {
-      await uploadInvoicePhoto(fb, { familyId, kidId, invoiceId, file, index: paths.length });
+      await uploadInvoicePhoto(fb, { familyId, kidId, invoiceId, file });
+    } catch {
+      setError(t('kidNew.photoFailed'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(path: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await removeInvoicePhoto(fb, { familyId, invoiceId, path });
     } catch {
       setError(t('kidNew.photoFailed'));
     } finally {
@@ -2129,8 +2406,17 @@ export function InvoicePhotos(
       <Button disabled={busy || paths.length >= MAX_PHOTOS} onClick={() => input.current?.click()}>
         {t('kidNew.addPhoto')}
       </Button>
-      <ul>
-        {paths.map((path) => <li key={path}>{path.split('/').pop()}</li>)}
+      <ul className={styles.thumbs}>
+        {paths.map((path) => (
+          <li key={path}>
+            {urls[path]
+              ? <img src={urls[path]} alt="" data-testid="photo-thumb" />
+              : <span data-testid="photo-thumb-pending" />}
+            <Button variant="danger" disabled={busy} onClick={() => void remove(path)}>
+              {t('kidNew.removePhoto')}
+            </Button>
+          </li>
+        ))}
       </ul>
     </section>
   );
@@ -2152,6 +2438,15 @@ export function InvoicePhotos(
   gap: var(--s-2);
   margin-bottom: var(--s-4);
 }
+.thumbs {
+  list-style: none;
+  margin: var(--s-3) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr));
+  gap: var(--s-2);
+}
+.thumbs img { width: 100%; border-radius: var(--radius); display: block; }
 ```
 
 Register the route: `kidRoutes` gets `{ path: 'new', element: <NewInvoice /> }`, and `KID_TABS` gets `{ to: '/kid/new', labelKey: 'kidNav.new' }`.
@@ -2315,6 +2610,54 @@ Task 6 leaves a saved draft on screen with its photo picker and no way to send i
 
 Append to `app/src/screens/kid/NewInvoice.test.tsx`:
 ```tsx
+describe('photos', () => {
+  it('a 5-8 invoice cannot be sent until a photo has synced', async () => {
+    await signInTestKid(await seedKid(2020)); // age 6
+    renderNew();
+    await userEvent.click(await screen.findByRole('button', { name: /valentía/i }));
+    await userEvent.click(screen.getAllByTestId('price-choice')[0]!);
+    await userEvent.click(screen.getByRole('button', { name: /guardar/i }));
+
+    // at this age the kid typed nothing, so with no photo there is nothing
+    // for a parent to review — the send button stays disabled and says why
+    const send = await screen.findByRole('button', { name: /enviar/i });
+    expect(send).toBeDisabled();
+    expect(screen.getByText(/agrega una foto/i)).toBeInTheDocument();
+  });
+
+  it('an 8-12 invoice can be sent without a photo, because it has words', async () => {
+    await signInTestKid(await seedKid(2016));
+    renderNew();
+    await userEvent.type(await screen.findByLabelText(/qué hiciste/i), 'Ordené mi cuarto');
+    await userEvent.type(screen.getByLabelText(/cuánto/i), '4000');
+    await userEvent.click(screen.getByRole('button', { name: /guardar/i }));
+    expect(await screen.findByRole('button', { name: /enviar/i })).toBeEnabled();
+  });
+
+  it('removing a photo detaches it from the invoice', async () => {
+    await signInTestKid(await seedKid(2016));
+    renderNew();
+    await userEvent.type(await screen.findByLabelText(/qué hiciste/i), 'Con foto');
+    await userEvent.type(screen.getByLabelText(/cuánto/i), '1000');
+    await userEvent.click(screen.getByRole('button', { name: /guardar/i }));
+    await screen.findByRole('button', { name: /agregar foto/i });
+
+    // the upload itself needs a real browser (see the gap note below), so
+    // attach the path the way a completed upload would and prove the removal
+    const all = await invoices();
+    const id = all.docs[0]!.id;
+    const path = `families/${familyId}/kids/k1/invoices/${id}/seeded.jpg`;
+    await seedDoc(`families/${familyId}/invoices/${id}`, {
+      ...(all.docs[0]!.data() as Record<string, never>), photoPaths: [path],
+    });
+    await userEvent.click(await screen.findByRole('button', { name: /quitar/i }));
+    await waitFor(async () => {
+      const after = await invoices();
+      expect(after.docs[0]!.get('photoPaths')).toEqual([]);
+    }, { timeout: 5000 });
+  });
+});
+
 describe('sending from the builder', () => {
   it('saves a draft, then sends it with its event', async () => {
     await signInTestKid(await seedKid(2016));
@@ -2341,9 +2684,13 @@ In `NewInvoice.tsx`, import `sendInvoice` and `useDoc`, and render the button be
       ) : (
         <>
           <p role="status">{t('kidNew.saved')}</p>
-          <InvoicePhotos familyId={familyId} kidId={kidId} invoiceId={invoiceId} />
+          <InvoicePhotos
+            familyId={familyId} kidId={kidId} invoiceId={invoiceId}
+            onCountChange={setPhotoCount}
+          />
+          {!canSend && <p role="status">{t('kidNew.needPhoto')}</p>}
           <Button
-            disabled={busy}
+            disabled={busy || !canSend}
             onClick={() => run(async () => {
               // read the invoice back rather than reconstructing it: the send
               // needs the server's eventCount and status, not our guesses
@@ -2396,7 +2743,9 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { doc, getDocFromServer, writeBatch } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
-import { parentFb, kidFb } from '../../firebase.js';
+import { parentFb, kidBundle } from '../../firebase.js';
+
+const kidFb = kidBundle();
 import { callables } from '../../lib/callables.js';
 import { initI18n } from '../../i18n/index.js';
 import { clearFirestoreData, seedDoc, signInTestParent, signInTestKid } from '../../test/emulator.js';
@@ -2694,7 +3043,9 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { doc, writeBatch } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
-import { parentFb, kidFb } from '../../firebase.js';
+import { parentFb, kidBundle } from '../../firebase.js';
+
+const kidFb = kidBundle();
 import { callables } from '../../lib/callables.js';
 import { initI18n } from '../../i18n/index.js';
 import { clearFirestoreData, seedDoc, signInTestParent, signInTestKid } from '../../test/emulator.js';
@@ -3103,8 +3454,8 @@ git commit -m "feat(app): profile switcher for a shared device"
 **The spec's promise:** "kids can draft invoices offline; they sync later." That needs Firestore's persistent cache, which changes how the instances are constructed.
 
 **Files:**
-- Modify: `app/src/firebase.ts`, `app/src/firebase/firebase.test.tsx`
-- Create: `app/src/lib/offline.test.ts`
+- Modify: `app/src/firebase.ts`, `app/src/firebase/firebase.test.tsx`, `app/src/screens/kid/JoinKid.tsx`, `app/src/components/ProfileSwitcher.tsx`
+- Create: `app/src/lib/offline.test.ts`, `app/src/kid/kidSessionReset.ts`, `app/src/kid/kidSessionReset.test.ts`
 
 **Interfaces:**
 - Produces: both bundles built with `persistentLocalCache` when the environment supports it, `memoryLocalCache` otherwise; `disableNetwork`/`enableNetwork` used by the test to prove a draft survives being offline.
@@ -3119,7 +3470,11 @@ import {
   getDocs, writeBatch,
 } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
-import { parentFb, kidFb } from '../firebase.js';
+import { parentFb, kidBundle } from '../firebase.js';
+
+// kidBundle() rather than a frozen import: Task 11 replaces the kid instance
+// when the kid identity changes, so a module-level const would go stale
+const kidFb = kidBundle();
 import { callables } from './callables.js';
 import { clearFirestoreData, seedDoc, signInTestParent, signInTestKid } from '../test/emulator.js';
 import { createDraft } from './kidInvoice.js';
@@ -3228,18 +3583,152 @@ Add to `firebase.test.tsx`:
   });
 ```
 
-- [ ] **Step 3: Note the one thing offline cannot do**
+- [ ] **Step 3: Destroy the kid cache on identity change — the leak this task would otherwise open**
+
+Enabling persistence without this is a data leak on exactly the device the spec cares about: a phone two siblings share. The cache outlives `signOut`, and cache reads bypass rules.
+
+`app/src/kid/kidSessionReset.ts`:
+```ts
+import { clearIndexedDbPersistence, terminate } from 'firebase/firestore';
+import { signOut } from 'firebase/auth';
+import { kidBundle, newKidBundle, replaceKidBundle } from '../firebase.js';
+
+/**
+ * Ends a kid session and destroys everything it cached.
+ *
+ * Order is forced by the SDK: terminate() first (clearIndexedDbPersistence
+ * refuses while the instance is live), then clear, then build a NEW instance,
+ * because a terminated Firestore cannot be reused. The old app is deleted so
+ * its name is free and its IndexedDB is not left behind.
+ */
+export async function endKidSession(): Promise<void> {
+  const fb = kidBundle();
+  await signOut(fb.auth).catch(() => undefined);
+  await terminate(fb.db);
+  // best-effort: a browser in private mode may refuse, and a failure here
+  // must not strand the device in a half-ended session
+  await clearIndexedDbPersistence(fb.db).catch(() => undefined);
+  await fb.app.delete().catch(() => undefined);
+  replaceKidBundle(newKidBundle());
+}
+```
+
+Wire it into **both** ends of the switch — the module is useless unbound:
+
+In `JoinKid.tsx`, reset before redeeming, because a code may be for a different kid than the one already signed in on this device:
+```tsx
+      // a different kid may be taking over this device; start from a cache
+      // that has never seen the previous kid's documents
+      if (kidBundle().auth.currentUser) await endKidSession();
+      const fb = kidBundle();
+      const { data } = await callables(fb).mintKidToken({ code: code.trim().toUpperCase() });
+      await signInWithCustomToken(fb.auth, data.token);
+```
+
+In `ProfileSwitcher.tsx`, the kid-side branch ends the session before handing the phone back:
+```tsx
+  if (direction === 'to-parent') {
+    return (
+      <Button
+        variant="secondary"
+        onClick={async () => {
+          // the kid is done with the device: drop their session and cache
+          // before the parent view comes back
+          await endKidSession();
+          navigate('/');
+        }}
+      >
+        {t('switcher.toParent')}
+      </Button>
+    );
+  }
+```
+This makes `ProfileSwitcher`'s "coming back just navigates" test from Task 10 need one edit: it must now also assert `kidBundle().auth.currentUser` is null afterwards.
+
+`app/src/kid/kidSessionReset.test.ts`:
+```ts
+import { describe, it, expect, beforeEach } from 'vitest';
+import { doc, getDocFromCache, getDocFromServer, writeBatch } from 'firebase/firestore';
+import { signOut } from 'firebase/auth';
+import { parentFb, kidBundle } from '../firebase.js';
+import { callables } from '../lib/callables.js';
+import { clearFirestoreData, seedDoc, signInTestParent, signInTestKid } from '../test/emulator.js';
+import { endKidSession } from './kidSessionReset.js';
+
+const familyId = 'famReset';
+
+beforeEach(async () => {
+  await clearFirestoreData();
+  await signOut(kidBundle().auth);
+  await signInTestParent('resetparent');
+  const uid = parentFb.auth.currentUser!.uid;
+  const batch = writeBatch(parentFb.db);
+  batch.set(doc(parentFb.db, 'families', familyId), {
+    name: 'T', language: 'es', currency: 'COP', createdBy: uid, deductionRules: [],
+  });
+  batch.set(doc(parentFb.db, `families/${familyId}/members`, uid), {
+    role: 'parent', displayName: 'Leo',
+  });
+  batch.set(doc(parentFb.db, 'parentIndex', uid), { familyId });
+  await batch.commit();
+  for (const kidId of ['k1', 'k2']) {
+    await seedDoc(`families/${familyId}/kids/${kidId}`, {
+      name: kidId === 'k1' ? 'Mia' : 'Sib', birthYear: 2016, deductionsEnabled: false,
+      spendableBalance: 0, savingsBalance: 0,
+    });
+  }
+});
+
+async function codeFor(kidId: string): Promise<string> {
+  const { data } = await callables(parentFb).createJoinCode({ familyId, kidId });
+  return data.code;
+}
+
+describe('endKidSession', () => {
+  it('leaves nothing of the previous kid in the cache', async () => {
+    await signInTestKid(await codeFor('k1'));
+    const first = kidBundle();
+    // warm the cache with something only Mia may read
+    await getDocFromServer(doc(first.db, `families/${familyId}/kids/k1`));
+    await expect(getDocFromCache(doc(first.db, `families/${familyId}/kids/k1`)))
+      .resolves.toBeTruthy();
+
+    await endKidSession();
+
+    const second = kidBundle();
+    expect(second.db).not.toBe(first.db);
+    expect(second.auth.currentUser).toBeNull();
+    // the new instance's cache has never seen Mia's document
+    await expect(getDocFromCache(doc(second.db, `families/${familyId}/kids/k1`)))
+      .rejects.toThrow();
+  });
+
+  it('lets the next kid sign in on the fresh instance', async () => {
+    await signInTestKid(await codeFor('k1'));
+    await endKidSession();
+    await signInTestKid(await codeFor('k2'));
+    expect(kidBundle().auth.currentUser!.uid).toBe(`kid_${familyId}_k2`);
+    // and Mia's doc is denied outright, not served from a stale cache
+    await expect(getDocFromServer(doc(kidBundle().db, `families/${familyId}/kids/k1`)))
+      .rejects.toThrow();
+  });
+});
+```
+
+**What this test can and cannot prove here:** jsdom has no IndexedDB, so the suite runs on the memory cache and this proves the *instance* is rebuilt and the new cache is empty. That `clearIndexedDbPersistence` really removes the on-disk database is only observable in a real browser — Task 13 adds a Playwright assertion that a second kid on the same profile cannot read the first kid's documents after a reload.
+
+- [ ] **Step 4: Note the one thing offline cannot do**
 
 **Photos need connectivity.** The Storage rule authorizes an upload by reading the linked invoice, so a draft that exists only in the local cache cannot receive photos. `InvoicePhotos` must therefore surface a clear failure rather than a silent one — it already routes upload errors to `kidNew.photoFailed`; add a sentence to that string in both languages: `"Necesitas internet para subir fotos."` / `"You need a connection to upload photos."`
 
-- [ ] **Step 4: Verify and commit**
+- [ ] **Step 5: Verify and commit**
 
 Run: `npm run test:app && npm run typecheck -w @money-kids/app`
 Expected: all PASS.
 
 ```bash
 git add app
-git commit -m "feat(app): offline-capable drafts with a persistent cache and a memory fallback"
+git commit -m "feat(app): offline drafts, with the kid cache destroyed on identity change"
 ```
 
 ---
@@ -3522,6 +4011,47 @@ test('the whole invoice loop, on a phone-sized screen', async ({ page }) => {
   await expect(page.getByTestId('spendable')).toContainText('0');
 });
 
+test('a second kid on the same device cannot read the first kid’s cache', async ({ page }) => {
+  // the whole reason Task 11 destroys the cache on identity change: real
+  // IndexedDB, real reload, two kids, one browser profile
+  await signUpParent(page);
+  await page.getByLabel(/nombre de la familia/i).fill('Talero');
+  await page.getByRole('button', { name: /crear familia/i }).click();
+
+  const codes: string[] = [];
+  for (const name of ['Mia', 'Sib']) {
+    await page.getByRole('link', { name: /niños/i }).click();
+    await page.getByLabel(/^nombre$/i).fill(name);
+    await page.getByLabel(/año de nacimiento/i).fill('2016');
+    await page.getByRole('button', { name: /agregar niño/i }).click();
+    const card = page.getByRole('group', { name: new RegExp(name) });
+    await card.getByRole('button', { name: /mostrar código/i }).click();
+    codes.push((await card.getByTestId('join-code').textContent())!.trim());
+  }
+
+  // kid one signs in and caches their own balance
+  await page.goto('/kid');
+  await page.getByLabel(/código/i).fill(codes[0]!);
+  await page.getByRole('button', { name: /entrar/i }).click();
+  await expect(page.getByRole('heading', { name: /Hola, Mia/ })).toBeVisible();
+
+  // hand the device over: the switcher ends the session and clears the cache
+  await page.getByRole('button', { name: /volver con un adulto/i }).click();
+  await page.goto('/kid');
+  await page.getByLabel(/código/i).fill(codes[1]!);
+  await page.getByRole('button', { name: /entrar/i }).click();
+  await expect(page.getByRole('heading', { name: /Hola, Sib/ })).toBeVisible();
+
+  await page.reload();
+  // nothing of the first kid survives, on screen or in storage
+  await expect(page.getByRole('heading', { name: /Hola, Sib/ })).toBeVisible();
+  await expect(page.getByText(/Hola, Mia/)).toHaveCount(0);
+  const dbNames = await page.evaluate(async () => (await indexedDB.databases())
+    .map((d) => d.name ?? '').join(','));
+  // the previous kid app's database is gone, not merely unused
+  expect(dbNames).not.toContain('kid_');
+});
+
 test('a draft written offline survives a reload and syncs', async ({ page, context }) => {
   await signUpParent(page);
   await page.getByLabel(/nombre de la familia/i).fill('Talero');
@@ -3599,7 +4129,8 @@ Expected: everything passes, no type errors in any workspace, both bundles build
 
 Stated so a reviewer does not read them as oversights:
 
-- **Photo upload is not covered by a component test.** jsdom has no image encoder, so the compression arithmetic and its limits are unit-tested with the decode and encode seams stubbed, and the real upload is exercised only by Playwright.
+- **Photo *upload* is not covered by a component test**, though removal and the 5–8 send gate are. jsdom has no image encoder, so the compression arithmetic and its limits are unit-tested with the decode and encode seams stubbed, the removal test attaches a path the way a finished upload would, and the real upload runs only under Playwright.
+- **That `clearIndexedDbPersistence` really erases the on-disk cache is Playwright-only.** jsdom has no IndexedDB, so the component test can only prove the kid instance is rebuilt and its cache is empty; Task 13 asserts a second kid on the same browser profile cannot read the first kid's documents after a reload.
 - **Offline survival across a reload is Playwright-only.** jsdom has no IndexedDB, so the component suite runs on the memory cache and can prove queueing and sync but not persistence.
 - **QR codes are not built.** Manual code entry was chosen deliberately (see Decisions); the parent screen already shows the code as text.
 - **Voice notes for the 5–8 mode are out**, per the spec's own out-of-scope list, which is why that mode is photo-plus-tap rather than photo-plus-audio.
