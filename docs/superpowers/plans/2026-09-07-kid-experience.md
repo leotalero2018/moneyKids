@@ -3901,16 +3901,13 @@ Add the theme colour and Apple meta tags to `app/index.html`'s `<head>`:
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 ```
 
-**Icons:** generate three PNGs from one source with a plain script rather than committing binaries by hand — a coin glyph on the accent colour is enough for v1:
+**Icons:** generate them with `scripts/make-icons.mjs`, a dependency-free Node script that writes the PNGs directly — raw RGBA rows, one zlib stream, three chunks (IHDR/IDAT/IEND) with CRCs. ImageMagick is not installed on this machine and `sips` cannot rasterize SVG, so reaching for either would have added a setup step to every future checkout. A coin on the accent colour is enough for v1:
+
 ```bash
-# any of these works; pick what the machine has
-# ImageMagick:
-magick -size 512x512 xc:'#0b7285' -gravity center -pointsize 320 \
-  -fill '#fdfbf7' -annotate 0 '¢' app/public/icon-512.png
-magick app/public/icon-512.png -resize 192x192 app/public/icon-192.png
-magick app/public/icon-512.png -resize 180x180 app/public/apple-touch-icon.png
+node scripts/make-icons.mjs   # writes icon-512, icon-192, apple-touch-icon
 ```
-If ImageMagick is unavailable, write a 12-line Node script using `sharp`, or export from any editor — but **do not skip the icons**: an install prompt without a 192 and a 512 icon is silently refused by Chrome.
+
+**Do not skip the icons**: Chrome silently refuses the install prompt without a 192 and a 512, and a manifest naming icons that are not there fails just as surely — which is why the test asserts the files exist, not merely that the config mentions them.
 
 - [ ] **Step 3: Verify**
 
