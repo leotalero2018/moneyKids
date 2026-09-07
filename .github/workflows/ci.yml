@@ -1,0 +1,78 @@
+name: CI
+
+# Every suite that guards this repo. Branch protection requires these, so a
+# PR cannot merge with a broken money engine, broken rules, or a broken build.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.11'
+          cache: npm
+
+      # the Firestore, Auth and Storage emulators are Java processes
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - run: npm ci
+
+      # strict TypeScript is only real if it is checked: vitest transpiles
+      # without typechecking and esbuild strips types
+      - name: Typecheck (all workspaces)
+        run: npm run typecheck
+
+      - name: Unit tests (shared domain logic)
+        run: npm test -w @money-kids/shared
+
+      - name: Security rules tests
+        run: npm run test:rules
+
+      - name: Cloud Functions tests
+        run: npm run test:functions
+
+      - name: App component tests
+        run: npm run test:app
+
+      - name: Build app and functions
+        run: |
+          npm run build:app
+          npm run build -w @money-kids/functions
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.11'
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: End-to-end (mobile viewport, against the emulators)
+        run: npm run test:e2e
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: test-results/
+          retention-days: 7

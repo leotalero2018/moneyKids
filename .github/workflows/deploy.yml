@@ -1,0 +1,72 @@
+name: Deploy
+
+# Deploys on every merge to main. Requires two repo secrets:
+#   FIREBASE_SERVICE_ACCOUNT  - JSON key for a service account with the
+#                               Firebase Admin + API Keys Viewer roles
+#   FIREBASE_PROJECT_ID       - the target project (e.g. money-kids-prod)
+# and the app's web config as secrets (see the Build step). Firebase web
+# config is not secret, but keeping it in secrets avoids baking one project's
+# ids into the repo.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # never let two deploys race for the same project
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.11'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the app for production
+        env:
+          VITE_FB_API_KEY: ${{ secrets.VITE_FB_API_KEY }}
+          VITE_FB_AUTH_DOMAIN: ${{ secrets.VITE_FB_AUTH_DOMAIN }}
+          VITE_FB_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          VITE_FB_STORAGE_BUCKET: ${{ secrets.VITE_FB_STORAGE_BUCKET }}
+        run: |
+          # .env.production.local wins over the committed .env, so the build
+          # never inherits the emulator settings used in development
+          cat > app/.env.production.local <<EOF
+          VITE_FB_API_KEY=${VITE_FB_API_KEY}
+          VITE_FB_AUTH_DOMAIN=${VITE_FB_AUTH_DOMAIN}
+          VITE_FB_PROJECT_ID=${VITE_FB_PROJECT_ID}
+          VITE_FB_STORAGE_BUCKET=${VITE_FB_STORAGE_BUCKET}
+          EOF
+          npm run build:app
+
+      - name: Build the functions bundle
+        run: npm run build -w @money-kids/functions
+
+      - name: Authenticate to Firebase
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          echo "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> "$GITHUB_ENV"
+
+      - name: Deploy rules, indexes, functions and hosting
+        env:
+          PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: |
+          # rules and indexes first: deploying a UI that the rules do not yet
+          # authorize is the wrong order to fail in
+          npx firebase-tools deploy \
+            --project "$PROJECT_ID" \
+            --only firestore:rules,firestore:indexes,storage,functions,hosting \
+            --non-interactive \
+            --force

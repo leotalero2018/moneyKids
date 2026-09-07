@@ -1,0 +1,80 @@
+name: Claude Code Review
+
+# Runs Claude as a reviewer on every PR. Requires the repo secret
+# ANTHROPIC_API_KEY to be set. The review is posted as a PR comment.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > pr.diff
+          echo "diff_size=$(wc -c < pr.diff)" >> $GITHUB_OUTPUT
+
+      - name: Run Claude review
+        id: review
+        if: steps.diff.outputs.diff_size != '0'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          jq -n \
+            --rawfile diff pr.diff \
+            --arg title "$PR_TITLE" \
+            --arg body "$PR_BODY" \
+            '{
+              model: "claude-opus-5",
+              max_tokens: 16000,
+              thinking: { type: "adaptive" },
+              messages: [{
+                role: "user",
+                content: ("You are a senior software engineer reviewing a pull request in Money Kids: a bilingual Firebase PWA where kids invoice their parents for work.\n\nThings that matter in this codebase:\n- All money is integer MINOR units. Any float arithmetic on money, or a hardcoded /100, is a bug.\n- Money mutations happen ONLY in callable Cloud Functions. A client write to ledger, kid balances, or an invoice status of approved is a bug.\n- Every invoice transition must be batched with its event document at e{newEventCount}; neither write is valid alone.\n- Kid Firestore queries must be constrained by kidId, or the rules deny the whole read rather than filtering it.\n- Firestore onSnapshot errors are terminal, so a rule that dereferences resource.data on a possibly-missing document kills the listener for good.\n\nPR Title: " + $title + "\n\nPR Description:\n" + $body + "\n\nCode diff:\n```diff\n" + $diff + "\n```\n\nProvide a concise code review covering:\n1. **Summary** - What this PR does\n2. **Issues** - Bugs, security concerns, or problems (if any)\n3. **Suggestions** - Improvements or best practices\n4. **Verdict** - Approve / Request Changes / Comment\n\nBe direct and actionable. Skip praise for obvious things.")
+              }]
+            }' > payload.json
+
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d @payload.json)
+
+          # select the TEXT block by type: with adaptive thinking the first
+          # content block can be a thinking block, so .content[0].text is wrong
+          echo "$RESPONSE" | jq -r \
+            '[.content[]? | select(.type == "text") | .text] | join("\n")
+             | select(length > 0)
+             // ("Claude review failed: " + (.error.message // "unknown error"))' \
+            > review.md || echo "Claude review failed: could not parse response" > review.md
+
+      - name: Post review comment
+        if: steps.diff.outputs.diff_size != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "## 🤖 Claude Code Review"
+            echo ""
+            cat review.md
+            echo ""
+            echo "---"
+            echo "*Reviewed by [Claude](https://claude.ai) · Model: claude-opus-5*"
+          } > comment.md
+
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body-file comment.md
