@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { acceptParentInvite } from '../lib/callables.js';
+import { callables } from '../lib/callables.js';
+import { useFirebase } from '../firebase/FirebaseContext.js';
 import { Button } from '../components/Button.js';
 import { ErrorBanner } from '../components/ErrorBanner.js';
 import styles from './SignIn.module.css';
 
 export function JoinParent() {
   const { t } = useTranslation();
+  const fb = useFirebase();
   const [code, setCode] = useState('');
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -15,7 +17,7 @@ export function JoinParent() {
     setBusy(true);
     setFailed(false);
     try {
-      await acceptParentInvite({ code: code.trim().toUpperCase() });
+      await callables(fb).acceptParentInvite({ code: code.trim().toUpperCase() });
       // the session's parentIndex listener picks up the new pointer on its own
     } catch {
       setFailed(true);

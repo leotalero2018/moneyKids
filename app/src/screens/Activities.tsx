@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { collection, doc, query, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { parseMajor } from '@money-kids/shared';
 import { auth, db } from '../firebase.js';
+import { useFirebase } from '../firebase/FirebaseContext.js';
 import { useCollection } from '../hooks/useCollection.js';
 import { useSession } from '../session/SessionContext.js';
 import { seedCatalog, type Pillar } from '../lib/catalog.js';
@@ -26,6 +27,7 @@ interface Activity {
 
 export function Activities() {
   const { t, i18n } = useTranslation();
+  const fb = useFirebase();
   const { familyId, family } = useSession();
   const activities = useCollection<Activity>(
     familyId ? query(collection(db, `families/${familyId}/activities`)) : null,
@@ -92,7 +94,7 @@ export function Activities() {
           onClick={async () => {
             // awaited, not floating: a rejected seed used to vanish silently
             try {
-              await seedCatalog(familyId, family.currency, auth.currentUser!.uid);
+              await seedCatalog(fb, familyId, family.currency, auth.currentUser!.uid);
             } catch {
               setError(t('common.error'));
             }

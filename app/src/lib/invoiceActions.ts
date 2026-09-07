@@ -1,6 +1,6 @@
 import { doc, serverTimestamp, writeBatch, type Timestamp } from 'firebase/firestore';
 import type { DeductionLine } from '@money-kids/shared';
-import { auth, db } from '../firebase.js';
+import type { FirebaseBundle } from '../firebase.js';
 
 export interface InvoiceDoc {
   id: string;
@@ -26,8 +26,9 @@ const MAX_NOTE = 500;
  * against the pre-batch status. Writing either alone is denied.
  */
 export async function returnInvoice(
-  familyId: string, invoice: InvoiceDoc, note: string,
+  fb: FirebaseBundle, familyId: string, invoice: InvoiceDoc, note: string,
 ): Promise<void> {
+  const { auth, db } = fb;
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error('not signed in');
   if (note.length > MAX_NOTE) throw new Error(`note must be at most ${MAX_NOTE} characters`);
@@ -44,8 +45,9 @@ export async function returnInvoice(
 }
 
 export async function counterInvoice(
-  familyId: string, invoice: InvoiceDoc, amount: number, note: string,
+  fb: FirebaseBundle, familyId: string, invoice: InvoiceDoc, amount: number, note: string,
 ): Promise<void> {
+  const { auth, db } = fb;
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error('not signed in');
   if (!Number.isInteger(amount) || amount <= 0) {

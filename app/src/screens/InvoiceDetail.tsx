@@ -5,10 +5,11 @@ import { collection, orderBy, query } from 'firebase/firestore';
 import { getDownloadURL, ref } from 'firebase/storage';
 import { parseMajor } from '@money-kids/shared';
 import { db, storage } from '../firebase.js';
+import { useFirebase } from '../firebase/FirebaseContext.js';
 import { useDoc } from '../hooks/useDoc.js';
 import { useCollection } from '../hooks/useCollection.js';
 import { useSession } from '../session/SessionContext.js';
-import { approveInvoice } from '../lib/callables.js';
+import { callables } from '../lib/callables.js';
 import { counterInvoice, returnInvoice, type InvoiceDoc } from '../lib/invoiceActions.js';
 import { Button } from '../components/Button.js';
 import { Card } from '../components/Card.js';
@@ -29,6 +30,7 @@ interface EventDoc {
 export function InvoiceDetail() {
   const { t } = useTranslation();
   const { invoiceId } = useParams();
+  const fb = useFirebase();
   const { familyId, family } = useSession();
   const invoice = useDoc<InvoiceDoc>(
     familyId && invoiceId ? `families/${familyId}/invoices/${invoiceId}` : null,
@@ -114,7 +116,7 @@ export function InvoiceDetail() {
         <Card label={t('review.approve')}>
           <Button
             disabled={busy}
-            onClick={() => run(() => approveInvoice({ familyId, invoiceId: data.id }))}
+            onClick={() => run(() => callables(fb).approveInvoice({ familyId, invoiceId: data.id }))}
           >
             {t('review.approve')}
           </Button>
@@ -126,7 +128,7 @@ export function InvoiceDetail() {
           />
           <Button
             variant="secondary" disabled={busy}
-            onClick={() => run(() => returnInvoice(familyId, data, note))}
+            onClick={() => run(() => returnInvoice(fb, familyId, data, note))}
           >
             {t('review.return')}
           </Button>
@@ -145,7 +147,7 @@ export function InvoiceDetail() {
               } catch {
                 throw new Error(t('review.badAmount'));
               }
-              await counterInvoice(familyId, data, minor, note);
+              await counterInvoice(fb, familyId, data, minor, note);
             })}
           >
             {t('review.counter')}

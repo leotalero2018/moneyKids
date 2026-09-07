@@ -5,7 +5,8 @@ import { parseMajor } from '@money-kids/shared';
 import { db } from '../firebase.js';
 import { useCollection } from '../hooks/useCollection.js';
 import { useSession } from '../session/SessionContext.js';
-import { recordPayout } from '../lib/callables.js';
+import { callables } from '../lib/callables.js';
+import { useFirebase } from '../firebase/FirebaseContext.js';
 import { Button } from '../components/Button.js';
 import { Card } from '../components/Card.js';
 import { ErrorBanner } from '../components/ErrorBanner.js';
@@ -27,6 +28,7 @@ interface LedgerEntry {
 
 function KidPayout({ familyId, currency, kid }: { familyId: string; currency: string; kid: Kid }) {
   const { t } = useTranslation();
+  const fb = useFirebase();
   const [amount, setAmount] = useState('');
   const [balance, setBalance] = useState<'spendable' | 'savings'>('spendable');
   const [note, setNote] = useState('');
@@ -60,7 +62,9 @@ function KidPayout({ familyId, currency, kid }: { familyId: string; currency: st
     setBusy(true);
     setError(null);
     try {
-      await recordPayout({ familyId, kidId: kid.id, balance, amount: minor, note, requestId });
+      await callables(fb).recordPayout({
+        familyId, kidId: kid.id, balance, amount: minor, note, requestId,
+      });
       setAmount('');
       setNote('');
       setRequestId(crypto.randomUUID()); // only after a confirmed success

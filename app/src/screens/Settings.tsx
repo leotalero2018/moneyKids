@@ -4,7 +4,8 @@ import { collection, query } from 'firebase/firestore';
 import { db } from '../firebase.js';
 import { useCollection } from '../hooks/useCollection.js';
 import { useSession } from '../session/SessionContext.js';
-import { createParentInvite } from '../lib/callables.js';
+import { callables } from '../lib/callables.js';
+import { useFirebase } from '../firebase/FirebaseContext.js';
 import { Button } from '../components/Button.js';
 import { Card } from '../components/Card.js';
 import { DeductionSettings } from './DeductionSettings.js';
@@ -16,6 +17,7 @@ interface InviteLogEntry { id: string; createdBy: string; usedBy: string | null 
 
 export function Settings() {
   const { t, i18n } = useTranslation();
+  const fb = useFirebase();
   const { familyId } = useSession();
   const invites = useCollection<InviteLogEntry>(
     familyId ? query(collection(db, `families/${familyId}/inviteLog`)) : null,
@@ -29,7 +31,7 @@ export function Settings() {
     setBusy(true);
     setError(null);
     try {
-      await createParentInvite({ familyId: familyId! });
+      await callables(fb).createParentInvite({ familyId: familyId! });
     } catch {
       setError(t('common.error'));
     } finally {

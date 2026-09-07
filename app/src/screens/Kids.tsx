@@ -4,7 +4,8 @@ import { collection, doc, query, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase.js';
 import { useCollection } from '../hooks/useCollection.js';
 import { useSession } from '../session/SessionContext.js';
-import { createJoinCode, revokeKidAccess } from '../lib/callables.js';
+import { callables } from '../lib/callables.js';
+import { useFirebase } from '../firebase/FirebaseContext.js';
 import { Button } from '../components/Button.js';
 import { Card } from '../components/Card.js';
 import { ErrorBanner } from '../components/ErrorBanner.js';
@@ -23,6 +24,7 @@ interface Kid {
 
 export function Kids() {
   const { t } = useTranslation();
+  const fb = useFirebase();
   const { familyId } = useSession();
   const kids = useCollection<Kid>(familyId ? query(collection(db, `families/${familyId}/kids`)) : null);
   const [name, setName] = useState('');
@@ -50,7 +52,7 @@ export function Kids() {
   async function showCode(kidId: string) {
     setError(null);
     try {
-      const { data } = await createJoinCode({ familyId: familyId!, kidId });
+      const { data } = await callables(fb).createJoinCode({ familyId: familyId!, kidId });
       setCodes((prev) => ({ ...prev, [kidId]: data.code }));
     } catch {
       setError(t('common.error'));
@@ -60,7 +62,7 @@ export function Kids() {
   async function revoke(kidId: string) {
     setError(null);
     try {
-      await revokeKidAccess({ familyId: familyId!, kidId });
+      await callables(fb).revokeKidAccess({ familyId: familyId!, kidId });
       setCodes((prev) => {
         const next = { ...prev };
         delete next[kidId];

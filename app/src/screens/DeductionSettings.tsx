@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { validateDeductionRules, type DeductionRule, type Destination } from '@money-kids/shared';
 import { useSession } from '../session/SessionContext.js';
-import { setDeductionRules } from '../lib/callables.js';
+import { callables } from '../lib/callables.js';
+import { useFirebase } from '../firebase/FirebaseContext.js';
 import { Button } from '../components/Button.js';
 import { Card } from '../components/Card.js';
 import { ErrorBanner } from '../components/ErrorBanner.js';
@@ -23,6 +24,7 @@ function percentToBasisPoints(text: string): number {
 
 export function DeductionSettings() {
   const { t } = useTranslation();
+  const fb = useFirebase();
   const { familyId, family } = useSession();
   const rules = family?.deductionRules ?? [];
   const [nameEs, setNameEs] = useState('');
@@ -40,7 +42,7 @@ export function DeductionSettings() {
       // the same validator the callable runs, so the parent sees the problem
       // without a round trip; the server still re-validates
       validateDeductionRules(next);
-      await setDeductionRules({ familyId, rules: next });
+      await callables(fb).setDeductionRules({ familyId, rules: next });
     } catch (e) {
       setError(/sum|exceed/i.test((e as Error).message) ? t('deductions.tooMuch') : t('common.error'));
     } finally {

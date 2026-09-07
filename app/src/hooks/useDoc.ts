@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { db } from '../firebase.js';
+import { useFirebase } from '../firebase/FirebaseContext.js';
 
 export interface DocState<T> {
   data: T | null;
@@ -10,6 +10,7 @@ export interface DocState<T> {
 
 /** Live single-document read. A null path means "not ready" — no subscription. */
 export function useDoc<T>(path: string | null): DocState<T> {
+  const { db } = useFirebase();
   const [state, setState] = useState<DocState<T>>({
     data: null, loading: path !== null, error: null,
   });
@@ -31,7 +32,8 @@ export function useDoc<T>(path: string | null): DocState<T> {
       (error) => setState({ data: null, loading: false, error }),
     );
     return unsub;
-  }, [path]);
+    // db belongs in the deps: switching instances must resubscribe
+  }, [path, db]);
 
   return state;
 }

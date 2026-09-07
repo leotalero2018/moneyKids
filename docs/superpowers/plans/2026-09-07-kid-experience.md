@@ -98,14 +98,15 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { doc, setDoc, writeBatch } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { parentFb, kidBundle } from '../firebase.js';
-
-// kidBundle() rather than a frozen import: Task 11 replaces the kid instance
-// when the kid identity changes, so a module-level const would go stale
-const kidFb = kidBundle();
 import { FirebaseProvider } from './FirebaseContext.js';
 import { useDoc } from '../hooks/useDoc.js';
 import { clearFirestoreData, signInTestParent } from '../test/emulator.js';
 import type { ReactNode } from 'react';
+
+// kidBundle() rather than a frozen import: Task 11 replaces the kid instance
+// when the kid identity changes, so a module-level const would go stale.
+// This file never resets, so binding once here is safe.
+const kidFb = kidBundle();
 
 beforeAll(async () => {
   // sign BOTH out first, then sign the parent in: this test asserts the kid
@@ -308,7 +309,7 @@ export function useDoc<T>(path: string | null): DocState<T> {
 
 - [ ] **Step 5: Make the write helpers take a bundle**
 
-`lib/callables.ts` becomes a factory, memoized per bundle so `httpsCallable` is not rebuilt on every render:
+`lib/callables.ts` becomes a factory, memoized per bundle so `httpsCallable` is not rebuilt on every render. **Type the members as `HttpsCallable<Req, Res>`** rather than writing the signatures by hand and casting the object `as unknown as Callables`: the SDK's type already describes `(data) => Promise<{ data: Res }>`, and the cast would silently accept a wrong request shape at every call site.
 ```ts
 import { httpsCallable } from 'firebase/functions';
 import type { DeductionRule } from '@money-kids/shared';
@@ -354,6 +355,8 @@ export function callables(fb: FirebaseBundle): Callables {
 ```
 
 `lib/invoiceActions.ts` — both functions gain a leading `fb` parameter and use `fb.db` / `fb.auth`; the batching and event shape are unchanged. Update the parent call sites to `const fb = useFirebase();` and pass it. Same for `lib/catalog.ts`'s `seedCatalog(fb, familyId, currency, uid)`.
+
+**`invoiceActions.test.ts` changes too** — it calls both helpers directly, so every call gains a leading `parentFb`. That file is the one place the signature change is visible outside a component, and typecheck is what surfaces it (eight errors, one per call); the tests themselves would still have passed had the parameter been optional, which is a reason not to make it optional.
 
 - [ ] **Step 6: Flush both instances in the test helper**
 

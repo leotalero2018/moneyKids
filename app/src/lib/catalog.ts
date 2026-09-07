@@ -1,6 +1,6 @@
 import { collection, doc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { minorDigits } from '@money-kids/shared';
-import { db } from '../firebase.js';
+import type { FirebaseBundle } from '../firebase.js';
 
 export type Pillar = 'learn' | 'courage' | 'ideas' | 'help';
 
@@ -84,7 +84,10 @@ export const STARTER_CATALOG: readonly CatalogEntry[] = [
 ];
 
 /** Writes the whole catalog in one batch, scaled to the family currency. */
-export async function seedCatalog(familyId: string, currency: string, uid: string): Promise<void> {
+export async function seedCatalog(
+  fb: FirebaseBundle, familyId: string, currency: string, uid: string,
+): Promise<void> {
+  const { db } = fb;
   const batch = writeBatch(db);
   for (const entry of STARTER_CATALOG) {
     batch.set(doc(collection(db, `families/${familyId}/activities`)), {

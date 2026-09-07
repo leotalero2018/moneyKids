@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import {
   collection, doc, getDocFromServer, getDocsFromServer, writeBatch,
 } from 'firebase/firestore';
+import { parentFb } from '../firebase.js';
 import { auth, db } from '../firebase.js';
 import { clearFirestoreData, seedDoc, signInTestParent } from '../test/emulator.js';
 import { returnInvoice, counterInvoice, type InvoiceDoc } from './invoiceActions.js';
@@ -36,7 +37,7 @@ async function loadInvoice(): Promise<InvoiceDoc> {
 
 describe('returnInvoice', () => {
   it('transitions to returned and writes the paired event', async () => {
-    await returnInvoice(familyId, await loadInvoice(), 'Cuéntame más');
+    await returnInvoice(parentFb, familyId, await loadInvoice(), 'Cuéntame más');
     const snap = await getDocFromServer(doc(db, `families/${familyId}/invoices/inv1`));
     expect(snap.get('status')).toBe('returned');
     expect(snap.get('eventCount')).toBe(2);
@@ -51,7 +52,7 @@ describe('returnInvoice', () => {
   });
 
   it('rejects a note longer than the rules allow, leaving the invoice untouched', async () => {
-    await expect(returnInvoice(familyId, await loadInvoice(), 'x'.repeat(501))).rejects.toThrow();
+    await expect(returnInvoice(parentFb, familyId, await loadInvoice(), 'x'.repeat(501))).rejects.toThrow();
     const snap = await getDocFromServer(doc(db, `families/${familyId}/invoices/inv1`));
     expect(snap.get('status')).toBe('sent');
     expect((await getDocsFromServer(collection(db, `families/${familyId}/invoices/inv1/events`))).size)
@@ -61,7 +62,7 @@ describe('returnInvoice', () => {
 
 describe('counterInvoice', () => {
   it('records the counter-offer with the acting parent and a server time', async () => {
-    await counterInvoice(familyId, await loadInvoice(), 3000, 'Un poco menos');
+    await counterInvoice(parentFb, familyId, await loadInvoice(), 3000, 'Un poco menos');
     const snap = await getDocFromServer(doc(db, `families/${familyId}/invoices/inv1`));
     expect(snap.get('status')).toBe('countered');
     expect(snap.get('counterOffer').amount).toBe(3000);
@@ -73,15 +74,15 @@ describe('counterInvoice', () => {
 
   it('refuses a non-positive or non-integer amount before writing', async () => {
     const invoice = await loadInvoice();
-    await expect(counterInvoice(familyId, invoice, 0, '')).rejects.toThrow(/amount/i);
-    await expect(counterInvoice(familyId, invoice, -100, '')).rejects.toThrow(/amount/i);
-    await expect(counterInvoice(familyId, invoice, 12.5, '')).rejects.toThrow(/amount/i);
+    await expect(counterInvoice(parentFb, familyId, invoice, 0, '')).rejects.toThrow(/amount/i);
+    await expect(counterInvoice(parentFb, familyId, invoice, -100, '')).rejects.toThrow(/amount/i);
+    await expect(counterInvoice(parentFb, familyId, invoice, 12.5, '')).rejects.toThrow(/amount/i);
     expect((await loadInvoice()).status).toBe('sent');
   });
 
   it('cannot act on an invoice that is not sent', async () => {
-    await counterInvoice(familyId, await loadInvoice(), 3000, '');
+    await counterInvoice(parentFb, familyId, await loadInvoice(), 3000, '');
     // already countered: the rules only allow sent -> countered
-    await expect(counterInvoice(familyId, await loadInvoice(), 2000, '')).rejects.toThrow();
+    await expect(counterInvoice(parentFb, familyId, await loadInvoice(), 2000, '')).rejects.toThrow();
   });
 });

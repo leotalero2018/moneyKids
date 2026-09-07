@@ -1,6 +1,9 @@
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
+import {
+  createUserWithEmailAndPassword, signInWithCustomToken, signInWithEmailAndPassword,
+} from 'firebase/auth';
 import { waitForPendingWrites } from 'firebase/firestore';
-import { auth, db } from '../firebase.js';
+import { auth, kidBundle, parentFb } from '../firebase.js';
+import { callables } from '../lib/callables.js';
 
 const PROJECT_ID = import.meta.env.VITE_FB_PROJECT_ID;
 const REST_BASE =
@@ -31,7 +34,12 @@ export async function signInTestParent(uid: string): Promise<void> {
  * looks exactly like "the clear didn't work".
  */
 export async function clearFirestoreData(): Promise<void> {
-  await waitForPendingWrites(db);
+  // BOTH instances: an unacknowledged write on either is replayed after the
+  // wipe and turns up in the next test
+  await Promise.all([
+    waitForPendingWrites(parentFb.db),
+    waitForPendingWrites(kidBundle().db),
+  ]);
   const res = await fetch(
     `http://127.0.0.1:8480/emulator/v1/projects/${PROJECT_ID}/databases/(default)/documents`,
     { method: 'DELETE' },
@@ -75,4 +83,11 @@ export async function seedDoc(path: string, data: { [k: string]: Json }): Promis
     body: JSON.stringify({ fields: toFields(data) }),
   });
   if (!res.ok) throw new Error(`seedDoc ${path} failed: ${res.status} ${await res.text()}`);
+}
+
+/** Redeems a join code on the kid instance, exactly as the kid screen does. */
+export async function signInTestKid(code: string): Promise<void> {
+  const fb = kidBundle();
+  const { data } = await callables(fb).mintKidToken({ code });
+  await signInWithCustomToken(fb.auth, data.token);
 }
