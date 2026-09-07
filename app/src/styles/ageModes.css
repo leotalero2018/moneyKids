@@ -1,0 +1,33 @@
+/*
+ * Age modes are token overrides, not separate screens. Everything here
+ * re-declares variables already defined in tokens.css, so a component that
+ * only uses tokens adapts to every mode with no conditional code.
+ *
+ * The one difference tokens CANNOT express is behavioral: at 5-8 the invoice
+ * builder takes a photo and a tap instead of typed words (Plan 3 Task 6).
+ */
+
+/* 5-8: few words, very large targets, money as big friendly numbers */
+:root[data-age-mode='5-8'] {
+  --f-body: 1.25rem;
+  --f-small: 1rem;
+  --f-title: 1.75rem;
+  --f-money: 2.75rem;
+  --tap: 3.5rem;
+  --s-3: 1rem;
+  --s-4: 1.25rem;
+  --radius: 1.25rem;
+}
+
+/* 8-12 is the baseline: tokens.css already holds those values */
+
+/* 12-16: denser, more on screen, less shouting */
+:root[data-age-mode='12-16'] {
+  --f-body: 0.9375rem;
+  --f-small: 0.8125rem;
+  --f-title: 1.1875rem;
+  --f-money: 1.375rem;
+  --tap: 2.5rem;
+  --s-4: 0.75rem;
+  --radius: 0.5rem;
+}

@@ -149,5 +149,10 @@
     "submit": "Entrar",
     "failed": "Ese código no sirve. Pide uno nuevo.",
     "reopen": "Cierra la app y ábrela otra vez para entrar con otro código."
+  },
+  "kidNav": {
+    "home": "Inicio",
+    "new": "Nueva factura",
+    "invoices": "Mis facturas"
   }
 }

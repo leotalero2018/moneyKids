@@ -149,5 +149,10 @@
     "submit": "Go",
     "failed": "That code does not work. Ask for a new one.",
     "reopen": "Close the app and open it again to sign in with a different code."
+  },
+  "kidNav": {
+    "home": "Home",
+    "new": "New invoice",
+    "invoices": "My invoices"
   }
 }

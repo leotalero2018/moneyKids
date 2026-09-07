@@ -8,6 +8,8 @@ import { PinGate } from './components/PinGate.js';
 import { Spinner } from './components/Spinner.js';
 import { PARENT_TABS, parentRoutes } from './routes.js';
 import { usePendingCount } from './screens/Inbox.js';
+import { KidSessionProvider } from './kid/KidSessionContext.js';
+import { KidShell } from './kid/KidShell.js';
 
 /**
  * The signed-in shell is its OWN component, not a branch inside Shell.
@@ -55,9 +57,16 @@ function Shell() {
 export function App() {
   return (
     <BrowserRouter>
-      <SessionProvider>
-        <Shell />
-      </SessionProvider>
+      <Routes>
+        {/* the kid app has its own session and its own Firebase instance, and
+            a kid device has no parent session at all — so it sits OUTSIDE the
+            parent session gate */}
+        <Route
+          path="/kid/*"
+          element={<KidSessionProvider><KidShell /></KidSessionProvider>}
+        />
+        <Route path="*" element={<SessionProvider><Shell /></SessionProvider>} />
+      </Routes>
     </BrowserRouter>
   );
 }
