@@ -9,10 +9,11 @@ on:
 
 jobs:
   claude-review:
-    # a PR from a fork gets no secrets and a read-only token, so the API call
+    # A PR from a fork gets no secrets and a read-only token, so the API call
     # cannot work and `gh pr comment` would fail on permissions — a worse
-    # outcome than saying nothing
-    if: github.event.pull_request.head.repo.fork == false
+    # outcome than saying nothing. Compared by full_name rather than
+    # `fork == false`, because GitHub expressions coerce null and false alike.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -43,9 +44,11 @@ jobs:
             {
               echo "## 🤖 Claude Code Review"
               echo ""
-              echo "Skipped: the repository secret \`ANTHROPIC_API_KEY\` is not set."
+              echo "Skipped: \`ANTHROPIC_API_KEY\` was not available to this run."
               echo ""
-              echo "Add it under **Settings → Secrets and variables → Actions**, or with:"
+              echo "Dependabot runs use a separate secret store, so this can happen"
+              echo "even when the secret exists. If it is genuinely unset, add it under"
+              echo "**Settings → Secrets and variables → Actions**:"
               echo ""
               echo '```bash'
               echo "gh secret set ANTHROPIC_API_KEY --repo ${{ github.repository }}"
@@ -74,6 +77,7 @@ jobs:
           # kill the step: `run:` blocks are bash -e, so a DNS or TLS failure
           # in a command substitution aborts before any fallback can report it
           HTTP=$(curl -sS -o response.json -w '%{http_code}' \
+            --max-time 180 --retry 3 --retry-connrefused \
             https://api.anthropic.com/v1/messages \
             -H "x-api-key: $ANTHROPIC_API_KEY" \
             -H "anthropic-version: 2023-06-01" \
@@ -101,8 +105,9 @@ jobs:
                | join("\n")
                | if (. | gsub("^\\s+|\\s+$"; "") | length) > 0 then .
                  else "Claude review failed: "
-                      + (($r | objects | .error.type) // "unknown_error") + " — "
-                      + (($r | objects | .error.message)
+                      + (($r | objects | .error | objects | .type)
+                         // "unknown_error") + " — "
+                      + (($r | objects | .error | objects | .message)
                          // "the response contained no text block")
                  end' \
               > review.md \
@@ -112,7 +117,7 @@ jobs:
 
           # make the outcome visible in the job, not only in the PR comment
           if grep -q '^Claude review failed:' review.md; then
-            echo "::warning title=Claude review::$(head -1 review.md | tr -d '\r\n%')"
+            echo "::warning title=Claude review::$(head -1 review.md | sed 's/%/%25/g')"
           fi
 
       - name: Post review comment
