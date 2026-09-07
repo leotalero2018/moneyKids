@@ -154,5 +154,13 @@
     "home": "Home",
     "new": "New invoice",
     "invoices": "My invoices"
+  },
+  "kidHome": {
+    "greeting": "Hi, {{name}}",
+    "spendable": "You can spend",
+    "savings": "And in your savings",
+    "waysToEarn": "Ways to earn",
+    "freeForm": "I have another idea",
+    "empty": "No activities yet. Ask a grown-up to add some."
   }
 }

@@ -33,6 +33,7 @@ Recorded so a reviewer knows these were chosen, not overlooked:
 - **Bilingual, always.** Every string comes from `react-i18next` with matching `es`/`en` keys (the key-parity test enforces it). Kid copy is playful but never babyish — the app treats a kid as a professional sending real invoices.
 - **Assert Firestore state with `getDocFromServer` / `getDocsFromServer`**, never plain `getDoc`: a cached read is satisfied by a locally buffered write and passes before the server has it.
 - **`clearFirestoreData()` awaits `waitForPendingWrites` first**, on **both** instances once Task 1 lands — unacknowledged writes are otherwise replayed after the wipe and reappear in the next test.
+- **A family's subcollections cannot be created in the same batch as the family.** Rules authorize them through `isFamilyParent()`, which calls `exists()` on the member doc, and `exists()` sees only pre-batch state. Commit the family + member + pointer batch first, then write activities, kids, and everything else. (Family creation itself works because its rule uses `existsAfter`.)
 - **Wrap a screen in a session provider only if it uses that session.** A provider around a screen that does not need it subscribes to documents the current user may not read yet, surfacing as an unattributable `FirebaseError`.
 - Node ≥ 20.11, TypeScript `strict: true`, `typecheck` in every workspace, run in every task's verification. Component tests run under `firebase emulators:exec`.
 - Commit after every task (steps say when).
@@ -1167,17 +1168,23 @@ async function seedAll(deductionsEnabled: boolean): Promise<string> {
     role: 'parent', displayName: 'Leo',
   });
   batch.set(doc(parentFb.db, 'parentIndex', uid), { familyId });
-  batch.set(doc(parentFb.db, `families/${familyId}/activities/act1`), {
+  await batch.commit();
+
+  // activities go in a SEPARATE write, after the family batch has landed:
+  // the activity rule authorizes through isFamilyParent(), which uses
+  // exists() on the member doc, and exists() sees only pre-batch state — so
+  // an activity created in the same batch as its family is always denied.
+  // (Every later task that seeds activities has the same constraint.)
+  await setDoc(doc(parentFb.db, `families/${familyId}/activities/act1`), {
     titleEs: 'Lee un libro', titleEn: 'Read a book', descriptionEs: 'Cuéntamelo',
     descriptionEn: 'Tell me about it', suggestedPrice: 5000, category: 'learn',
     repeatable: true, active: true, createdBy: uid, createdAt: serverTimestamp(),
   });
-  batch.set(doc(parentFb.db, `families/${familyId}/activities/act2`), {
+  await setDoc(doc(parentFb.db, `families/${familyId}/activities/act2`), {
     titleEs: 'Actividad guardada', titleEn: 'Archived activity', descriptionEs: '',
     descriptionEn: '', suggestedPrice: 1000, category: 'help',
     repeatable: true, active: false, createdBy: uid, createdAt: serverTimestamp(),
   });
-  await batch.commit();
   await seedDoc(`families/${familyId}/kids/k1`, {
     name: 'Mia', birthYear: 2016, deductionsEnabled,
     spendableBalance: 7000, savingsBalance: 2000,
@@ -2014,12 +2021,14 @@ async function seedKid(birthYear: number): Promise<string> {
     role: 'parent', displayName: 'Leo',
   });
   batch.set(doc(parentFb.db, 'parentIndex', uid), { familyId });
-  batch.set(doc(parentFb.db, `families/${familyId}/activities/act1`), {
+  await batch.commit();
+  // separate write: isFamilyParent() uses exists(), which cannot see a member
+  // doc created in the same batch
+  await setDoc(doc(parentFb.db, `families/${familyId}/activities/act1`), {
     titleEs: 'Lee un libro', titleEn: 'Read a book', descriptionEs: '', descriptionEn: '',
     suggestedPrice: 5000, category: 'learn', repeatable: true, active: true,
     createdBy: uid, createdAt: serverTimestamp(),
   });
-  await batch.commit();
   await seedDoc(`families/${familyId}/kids/k1`, {
     name: 'Mia', birthYear, deductionsEnabled: false,
     spendableBalance: 0, savingsBalance: 0,

@@ -1,0 +1,13 @@
+.screen { padding: var(--s-4) var(--s-4) calc(var(--tap) + var(--s-6)); }
+.balances {
+  text-align: center;
+  padding: var(--s-5) var(--s-4);
+  margin-bottom: var(--s-5);
+  border-radius: var(--radius);
+  background: var(--c-surface);
+  box-shadow: var(--shadow);
+}
+.label { margin: 0; font-size: var(--f-small); color: var(--c-ink-soft); }
+.big { margin: 0 0 var(--s-3); font-size: var(--f-money); font-weight: 800; color: var(--c-money); }
+.medium { margin: 0; font-size: calc(var(--f-money) * 0.6); font-weight: 700; color: var(--c-money); }
+.freeForm { display: inline-block; margin-bottom: var(--s-4); color: var(--c-accent); }

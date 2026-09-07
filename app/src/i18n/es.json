@@ -154,5 +154,13 @@
     "home": "Inicio",
     "new": "Nueva factura",
     "invoices": "Mis facturas"
+  },
+  "kidHome": {
+    "greeting": "Hola, {{name}}",
+    "spendable": "Tienes para gastar",
+    "savings": "Y en tu ahorro",
+    "waysToEarn": "Formas de ganar",
+    "freeForm": "Tengo otra idea",
+    "empty": "Todavía no hay actividades. Pídele a tu mamá o papá que agreguen algunas."
   }
 }

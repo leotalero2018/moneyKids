@@ -22,7 +22,10 @@ export interface Session {
   status: 'loading' | 'signed-out' | 'no-family' | 'ready';
 }
 
-const SessionCtx = createContext<Session | null>(null);
+// exported so useCurrencyAndLocale can read it WITHOUT useSession's throw:
+// Money renders in both apps, and a missing provider must be a null, not an
+// exception caught around a hook call
+export const SessionCtx = createContext<Session | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
