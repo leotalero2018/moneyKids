@@ -78,9 +78,14 @@ export async function revokeKidAccessCore(
     .where('familyId', '==', data.familyId)
     .where('kidId', '==', data.kidId)
     .get();
-  const batch = db.batch();
-  for (const c of codes.docs) batch.update(c.ref, { revoked: true });
-  await batch.commit();
+  // Individual merge-writes, NOT a batch of updates. A batch is atomic and
+  // `update` requires the document to still exist, so a single code that
+  // vanished between the query and the commit — expired cleanup, a
+  // concurrent revoke — failed the entire batch and left EVERY code live
+  // while the parent saw a generic error. `set(..., {merge: true})` succeeds
+  // whether or not the document is there, and one missing code can no longer
+  // block the others.
+  await Promise.all(codes.docs.map((c) => c.ref.set({ revoked: true }, { merge: true })));
   await adminAuth.revokeRefreshTokens(`kid_${data.familyId}_${data.kidId}`).catch((e: { code?: string }) => {
     if (e.code !== 'auth/user-not-found') throw e; // kid may never have signed in
   });

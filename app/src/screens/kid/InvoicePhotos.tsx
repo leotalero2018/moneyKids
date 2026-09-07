@@ -39,7 +39,7 @@ export function InvoicePhotos({ familyId, kidId, invoiceId, onCountChange }: {
       setUrls(Object.fromEntries(
         pairs.filter((pair): pair is readonly [string, string] => pair[1] !== null),
       ));
-    });
+    }).catch(() => undefined); // thumbnails are cosmetic; never throw into the void
     return () => { live = false; };
   }, [key, fb.storage]);
 
