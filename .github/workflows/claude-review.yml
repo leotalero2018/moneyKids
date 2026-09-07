@@ -9,6 +9,10 @@ on:
 
 jobs:
   claude-review:
+    # a PR from a fork gets no secrets and a read-only token, so the API call
+    # cannot work and `gh pr comment` would fail on permissions — a worse
+    # outcome than saying nothing
+    if: github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -66,35 +70,49 @@ jobs:
               }]
             }' > payload.json
 
-          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+          # capture the status separately and never let curl's own exit code
+          # kill the step: `run:` blocks are bash -e, so a DNS or TLS failure
+          # in a command substitution aborts before any fallback can report it
+          HTTP=$(curl -sS -o response.json -w '%{http_code}' \
+            https://api.anthropic.com/v1/messages \
             -H "x-api-key: $ANTHROPIC_API_KEY" \
             -H "anthropic-version: 2023-06-01" \
             -H "content-type: application/json" \
-            -d @payload.json)
+            -d @payload.json) || HTTP=000
+          RESPONSE=$(cat response.json 2>/dev/null || true)
 
-          # Select the TEXT block by type: with adaptive thinking the first
-          # content block can be a thinking block, so .content[0].text is wrong.
-          #
-          # `. as $r` first, and the error branch reads $r rather than `.`:
-          # after join() the input is a STRING, so a fallback that reaches for
-          # .error.message aborts jq with "cannot index string" and buries the
-          # real reason (a missing API key reads as "could not parse response").
-          echo "$RESPONSE" | jq -r \
-            '. as $r
-             | [ ($r.content // [])[] | select(.type == "text") | .text ]
-             | join("\n")
-             | if (. | length) > 0 then .
-               else "Claude review failed: "
-                    + ($r.error.type // "unknown_error") + " — "
-                    + ($r.error.message // "the response contained no text block")
-               end' \
-            > review.md \
-            || printf 'Claude review failed: the API response was not JSON.\n\nFirst 400 bytes:\n\n```\n%s\n```\n' \
-                 "$(printf '%s' "$RESPONSE" | head -c 400)" > review.md
+          if [ "$HTTP" = "000" ]; then
+            echo "Claude review failed: could not reach the API (curl transport error)." > review.md
+          elif [ -z "$RESPONSE" ]; then
+            echo "Claude review failed: HTTP $HTTP with an empty body." > review.md
+          else
+
+            # Select the TEXT block by type: with adaptive thinking the first
+            # content block can be a thinking block, so .content[0].text is wrong.
+            #
+            # `. as $r` first, and the error branch reads $r rather than `.`:
+            # after join() the input is a STRING, so a fallback that reaches
+            # for .error.message aborts jq with "cannot index string" and
+            # buries the real reason. `objects` keeps it total even if the API
+            # ever returns valid JSON that is not an object.
+            echo "$RESPONSE" | jq -r \
+              '. as $r
+               | [ (($r | objects | .content) // [])[] | select(.type == "text") | .text ]
+               | join("\n")
+               | if (. | gsub("^\\s+|\\s+$"; "") | length) > 0 then .
+                 else "Claude review failed: "
+                      + (($r | objects | .error.type) // "unknown_error") + " — "
+                      + (($r | objects | .error.message)
+                         // "the response contained no text block")
+                 end' \
+              > review.md \
+              || printf 'Claude review failed: the API response was not JSON. First 400 bytes:\n\n    %s\n' \
+                   "$(printf '%s' "$RESPONSE" | head -c 400 | tr -d '`\r\n')" > review.md
+          fi
 
           # make the outcome visible in the job, not only in the PR comment
           if grep -q '^Claude review failed:' review.md; then
-            echo "::warning title=Claude review::$(head -1 review.md)"
+            echo "::warning title=Claude review::$(head -1 review.md | tr -d '\r\n%')"
           fi
 
       - name: Post review comment
