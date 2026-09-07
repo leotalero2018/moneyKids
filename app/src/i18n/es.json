@@ -181,5 +181,15 @@
     "photoFailed": "Esa foto no se pudo subir. Intenta otra vez. Necesitas internet para subir fotos.",
     "needPhoto": "Agrega una foto de lo que hiciste para poder enviarla.",
     "saved": "Guardada. Ahora puedes agregar fotos o enviarla."
+  },
+  "kidNegotiation": {
+    "title": "Tu factura",
+    "asked": "Pediste",
+    "offered": "Te ofrecen",
+    "accept": "Aceptar {{amount}}",
+    "explain": "Explica por qué vale lo que pediste",
+    "resend": "Enviar otra vez",
+    "approved": "¡Aprobada!",
+    "celebrate": "¡Bien hecho!"
   }
 }

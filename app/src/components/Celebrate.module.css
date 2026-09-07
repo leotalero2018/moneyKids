@@ -1,0 +1,15 @@
+.celebrate {
+  font-size: var(--f-money);
+  font-weight: 800;
+  color: var(--c-money);
+  text-align: center;
+  animation: pop 420ms ease-out;
+}
+@keyframes pop {
+  from { transform: scale(0.7); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+/* a celebration must never be a vestibular problem */
+@media (prefers-reduced-motion: reduce) {
+  .celebrate { animation: none; }
+}

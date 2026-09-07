@@ -181,5 +181,15 @@
     "photoFailed": "That photo could not be uploaded. Try again. You need a connection to upload photos.",
     "needPhoto": "Add a photo of what you did so you can send it.",
     "saved": "Saved. Now you can add photos or send it."
+  },
+  "kidNegotiation": {
+    "title": "Your invoice",
+    "asked": "You asked for",
+    "offered": "They offer",
+    "accept": "Accept {{amount}}",
+    "explain": "Explain why it is worth what you asked",
+    "resend": "Send again",
+    "approved": "Approved!",
+    "celebrate": "Nice work!"
   }
 }

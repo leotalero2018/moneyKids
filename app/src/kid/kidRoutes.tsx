@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react';
 import { KidHome } from '../screens/kid/KidHome.js';
 import { NewInvoice } from '../screens/kid/NewInvoice.js';
+import { InvoiceNegotiation } from '../screens/kid/InvoiceNegotiation.js';
 
 export interface RouteDef { path: string; element: ReactElement }
 
@@ -15,4 +16,6 @@ export const KID_TABS: { to: string; labelKey: string }[] = [
 export const kidRoutes: RouteDef[] = [
   { path: '', element: <KidHome /> },
   { path: 'new', element: <NewInvoice /> },
+  // no tab: reached from the history list
+  { path: 'invoice/:invoiceId', element: <InvoiceNegotiation /> },
 ];
