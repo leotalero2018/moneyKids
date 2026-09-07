@@ -219,25 +219,31 @@ export const parentFb = bundle('parent');
  * the instance — which is impossible if the bundle is a const the whole app
  * imported. Task 11 implements the reset; this is the seam it needs.
  */
-let currentKid = bundle('kid');
+export const KID_APP_NAME = 'kid';
+
+let currentKid = bundle(KID_APP_NAME);
 export function kidBundle(): FirebaseBundle { return currentKid; }
 export function replaceKidBundle(next: FirebaseBundle): void { currentKid = next; }
-export function newKidBundle(): FirebaseBundle { return bundle('kid', kidAppGeneration()); }
+
+/**
+ * Rebuilds the kid bundle under the SAME app name.
+ *
+ * The name must be stable, and a generation counter ('kid-1', 'kid-2', …)
+ * would be a bug: Firebase Auth keys its persisted user by app name, and the
+ * counter lives in module memory. After a reload the module re-initializes
+ * 'kid', so a kid signed in on 'kid-2' is silently signed out, the 'kid'
+ * cache (the FIRST kid's, if a clear ever failed) is the one that comes back,
+ * and every reset leaks another IndexedDB database that nothing cleans up.
+ *
+ * Caller contract: the previous app must already be deleted. `initializeApp`
+ * with a live same-name app returns that existing instance — which, after a
+ * reset, is the terminated one — so delete first, then call this.
+ */
+export function newKidBundle(): FirebaseBundle { return bundle(KID_APP_NAME); }
 
 // the original singleton names, bound to the parent bundle: every parent
 // screen and test written in Plan 2 keeps working with no edit
 export const { auth, db, fns, storage } = parentFb;
-```
-
-`bundle()` therefore takes an optional generation suffix, because `initializeApp` refuses a name that is already live:
-```ts
-let generation = 0;
-function kidAppGeneration(): number { return ++generation; }
-
-function bundle(label: 'parent' | 'kid', gen = 0): FirebaseBundle {
-  const app = initializeApp(config, gen === 0 ? label : `${label}-${gen}`);
-  // ...as above
-}
 ```
 
 **`kidFb` in this plan's later tasks means `kidBundle()`.** Tests may keep a local `const kidFb = kidBundle()` at the top of a file *only* if that file never resets the kid session; the reset tests must call `kidBundle()` after each reset.
@@ -633,10 +639,11 @@ Add to `es.json` (mirror in `en.json`):
     "help": "Pídele el código a tu mamá o papá.",
     "code": "Código",
     "submit": "Entrar",
-    "failed": "Ese código no sirve. Pide uno nuevo."
+    "failed": "Ese código no sirve. Pide uno nuevo.",
+    "reopen": "Cierra la app y ábrela otra vez para entrar con otro código."
   }
 ```
-(`en`: `"title": "Sign in with your code", "help": "Ask a grown-up for the code.", "code": "Code", "submit": "Go", "failed": "That code does not work. Ask for a new one."`)
+(`en`: `"title": "Sign in with your code", "help": "Ask a grown-up for the code.", "code": "Code", "submit": "Go", "failed": "That code does not work. Ask for a new one.", "reopen": "Close the app and open it again to sign in with a different code."`)
 
 `app/src/kid/KidSessionContext.tsx`:
 ```tsx
@@ -758,11 +765,13 @@ export function JoinKid() {
   const { t } = useTranslation();
   const [code, setCode] = useState('');
   const [failed, setFailed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function join() {
     setBusy(true);
     setFailed(false);
+    setError(null);
     try {
       // uppercase here so a kid typing lowercase still works; the callable
       // validates the exact alphabet and rejects anything else
@@ -781,6 +790,7 @@ export function JoinKid() {
       <h1>{t('kidJoin.title')}</h1>
       <p>{t('kidJoin.help')}</p>
       {failed && <ErrorBanner message={t('kidJoin.failed')} />}
+      {error && <ErrorBanner message={error} />}
       <label htmlFor="kid-code">{t('kidJoin.code')}</label>
       <input
         id="kid-code" value={code} autoCapitalize="characters" autoComplete="off"
@@ -3589,6 +3599,7 @@ Enabling persistence without this is a data leak on exactly the device the spec 
 
 `app/src/kid/kidSessionReset.ts`:
 ```ts
+import { deleteApp } from 'firebase/app';
 import { clearIndexedDbPersistence, terminate } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { kidBundle, newKidBundle, replaceKidBundle } from '../firebase.js';
@@ -3596,20 +3607,52 @@ import { kidBundle, newKidBundle, replaceKidBundle } from '../firebase.js';
 /**
  * Ends a kid session and destroys everything it cached.
  *
- * Order is forced by the SDK: terminate() first (clearIndexedDbPersistence
- * refuses while the instance is live), then clear, then build a NEW instance,
- * because a terminated Firestore cannot be reused. The old app is deleted so
- * its name is free and its IndexedDB is not left behind.
+ * The order is forced by the SDK and every step is load-bearing:
+ *   signOut  — drop the credential first, so nothing can keep reading
+ *   terminate— clearIndexedDbPersistence refuses while the instance is live
+ *   clear    — the actual erasure; rules never protect cache reads
+ *   deleteApp— frees the app NAME so the next initializeApp really builds a
+ *              new instance instead of handing back this terminated one
+ *   rebuild  — under the same stable name, so a reload finds the right app
+ *
+ * `deleteApp(app)` is the modular API. There is no `app.delete()`: the v9+
+ * `FirebaseApp` interface carries only `name`, `options`, and
+ * `automaticDataCollectionEnabled`, so a method call there does not compile.
  */
 export async function endKidSession(): Promise<void> {
   const fb = kidBundle();
   await signOut(fb.auth).catch(() => undefined);
   await terminate(fb.db);
-  // best-effort: a browser in private mode may refuse, and a failure here
-  // must not strand the device in a half-ended session
-  await clearIndexedDbPersistence(fb.db).catch(() => undefined);
-  await fb.app.delete().catch(() => undefined);
+
+  // Best-effort erasure: a browser in private mode can refuse IndexedDB
+  // outright. Track the outcome rather than swallowing it — if the cache
+  // could NOT be cleared, the next kid must not inherit this instance.
+  let cleared = true;
+  try {
+    await clearIndexedDbPersistence(fb.db);
+  } catch {
+    cleared = false;
+  }
+
+  await deleteApp(fb.app).catch(() => undefined);
   replaceKidBundle(newKidBundle());
+
+  if (!cleared) {
+    // the new instance shares the name, and so the on-disk cache we failed
+    // to erase. Refuse persistence for the rest of this page's life rather
+    // than serve one kid's documents to the next.
+    throw new KidCacheNotClearedError();
+  }
+}
+
+/**
+ * Thrown when the kid cache could not be erased. `JoinKid` catches it and
+ * asks the kid to close and reopen the app: a fresh page load reinitializes
+ * the instance, and if IndexedDB is unavailable the memory-cache fallback in
+ * Task 11's Step 2 means there is no shared cache to leak in the first place.
+ */
+export class KidCacheNotClearedError extends Error {
+  constructor() { super('the previous kid’s cached data could not be cleared'); }
 }
 ```
 
@@ -3618,8 +3661,16 @@ Wire it into **both** ends of the switch — the module is useless unbound:
 In `JoinKid.tsx`, reset before redeeming, because a code may be for a different kid than the one already signed in on this device:
 ```tsx
       // a different kid may be taking over this device; start from a cache
-      // that has never seen the previous kid's documents
-      if (kidBundle().auth.currentUser) await endKidSession();
+      // that has never seen the previous kid's documents. If the erasure
+      // failed, refuse the sign-in rather than seat Kid B on Kid A's cache.
+      if (kidBundle().auth.currentUser) {
+        try {
+          await endKidSession();
+        } catch {
+          setError(t('kidJoin.reopen'));
+          return;
+        }
+      }
       const fb = kidBundle();
       const { data } = await callables(fb).mintKidToken({ code: code.trim().toUpperCase() });
       await signInWithCustomToken(fb.auth, data.token);
@@ -3701,6 +3752,17 @@ describe('endKidSession', () => {
     // the new instance's cache has never seen Mia's document
     await expect(getDocFromCache(doc(second.db, `families/${familyId}/kids/k1`)))
       .rejects.toThrow();
+  });
+
+  it('keeps the app name stable, so a reload finds the same app', async () => {
+    await signInTestKid(await codeFor('k1'));
+    const firstName = kidBundle().app.name;
+    await endKidSession();
+    // a generation-suffixed name would sign the next kid out on reload, when
+    // module state resets and re-initializes the original name
+    expect(kidBundle().app.name).toBe(firstName);
+    await endKidSession();
+    expect(kidBundle().app.name).toBe(firstName);
   });
 
   it('lets the next kid sign in on the fresh instance', async () => {
@@ -3877,6 +3939,13 @@ npx playwright install chromium
 `e2e/playwright.config.ts`:
 ```ts
 import { defineConfig, devices } from '@playwright/test';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// absolute, derived from this file: a relative `cwd: '..'` is ambiguous —
+// depending on resolution it lands either at the repo root or one directory
+// above it, and the second silently runs some other project's `npm run dev`
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 export default defineConfig({
   testDir: '.',
@@ -3893,7 +3962,7 @@ export default defineConfig({
   webServer: {
     command: 'npm run dev',
     url: 'http://127.0.0.1:5173',
-    cwd: '..',
+    cwd: repoRoot,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
   },
@@ -3905,7 +3974,40 @@ Add the root script — the emulators wrap Playwright, exactly as they wrap the 
     "test:e2e": "npm run build -w @money-kids/functions && firebase emulators:exec --only firestore,auth,functions,storage --project money-kids-test \"npx playwright test --config e2e/playwright.config.ts\""
 ```
 
-- [ ] **Step 3: Write the spec**
+- [ ] **Step 3: Add the dev-only probe seam**
+
+The cache-isolation test has to ask a question no UI assertion can answer — *is the previous kid's document still readable from this device?* — and Playwright cannot import the Firestore SDK into the page (Vite serves bare specifiers only through transformed modules, so a runtime `import('firebase/firestore')` inside `page.evaluate` does not resolve). Expose the two reads from inside the bundle instead, and only in development:
+
+In `app/src/main.tsx`, after i18n initializes:
+```tsx
+if (import.meta.env.DEV) {
+  // test seam, dev builds only: the e2e cache-isolation spec needs to attempt
+  // a read from the kid instance's cache and from the server. Never shipped —
+  // import.meta.env.DEV is statically false in `vite build`, so this whole
+  // block is dropped from the production bundle.
+  const { doc, getDocFromCache, getDocFromServer } = await import('firebase/firestore');
+  (window as unknown as { __mk: unknown }).__mk = {
+    cachedRead: async (path: string) => {
+      try {
+        return (await getDocFromCache(doc(kidBundle().db, path))).exists();
+      } catch {
+        return false; // not in the cache at all
+      }
+    },
+    serverRead: async (path: string) => {
+      try {
+        await getDocFromServer(doc(kidBundle().db, path));
+        return 'allowed';
+      } catch (e) {
+        return (e as { code?: string }).code ?? 'error';
+      }
+    },
+  };
+}
+```
+Confirm it is really absent from production with `npm run build:app && grep -c '__mk' app/dist/assets/*.js` → `0`.
+
+- [ ] **Step 4: Write the spec**
 
 `e2e/invoice-loop.spec.ts` — this is the spec's own acceptance test: sign up → add kid → kid invoices with a photo → parent approves → balance updates → payout.
 ```ts
@@ -3925,6 +4027,21 @@ async function wipe(): Promise<void> {
     const res = await fetch(url, { method: 'DELETE' });
     if (!res.ok) throw new Error(`wipe failed: ${url} ${res.status}`);
   }
+}
+
+/** Reads the ids the cache probe needs, bypassing rules like the seeder does. */
+async function ids(): Promise<{ familyId: string; firstKidId: string }> {
+  const head = { Authorization: 'Bearer owner' };
+  const base = `http://127.0.0.1:8480/v1/projects/${PROJECT}/databases/(default)/documents`;
+  const families = (await (await fetch(`${base}/families`, { headers: head })).json())
+    .documents as { name: string }[];
+  const familyId = families[0]!.name.split('/').pop()!;
+  const kids = (await (await fetch(`${base}/families/${familyId}/kids`, { headers: head }))
+    .json()).documents as { name: string; createTime: string }[];
+  const oldest = kids.sort(
+    (a, b) => Date.parse(a.createTime) - Date.parse(b.createTime),
+  )[0]!;
+  return { familyId, firstKidId: oldest.name.split('/').pop()! };
 }
 
 async function signUpParent(page: Page): Promise<void> {
@@ -4029,6 +4146,9 @@ test('a second kid on the same device cannot read the first kid’s cache', asyn
     codes.push((await card.getByTestId('join-code').textContent())!.trim());
   }
 
+  // the ids the probe needs, read straight from the emulator
+  const { familyId, firstKidId } = await ids();
+
   // kid one signs in and caches their own balance
   await page.goto('/kid');
   await page.getByLabel(/código/i).fill(codes[0]!);
@@ -4043,13 +4163,26 @@ test('a second kid on the same device cannot read the first kid’s cache', asyn
   await expect(page.getByRole('heading', { name: /Hola, Sib/ })).toBeVisible();
 
   await page.reload();
-  // nothing of the first kid survives, on screen or in storage
+  // the second kid is still signed in after a reload — this is what the
+  // stable app name buys, and a generation-suffixed name would fail here
   await expect(page.getByRole('heading', { name: /Hola, Sib/ })).toBeVisible();
   await expect(page.getByText(/Hola, Mia/)).toHaveCount(0);
-  const dbNames = await page.evaluate(async () => (await indexedDB.databases())
-    .map((d) => d.name ?? '').join(','));
-  // the previous kid app's database is gone, not merely unused
-  expect(dbNames).not.toContain('kid_');
+
+  // and the real question: can anything still READ the first kid's document?
+  // Asserting on IndexedDB database NAMES cannot answer that — Firestore
+  // names its store `firestore/<appName>/<project>/main`, so a name check is
+  // both implementation-coupled and, for a stable app name, always true.
+  // Probe the cache and the server instead, through the dev-only seam.
+  const leaked = await page.evaluate(async (kidPath) =>
+    (window as unknown as { __mk: { cachedRead(path: string): Promise<boolean> } })
+      .__mk.cachedRead(kidPath), `families/${familyId}/kids/${firstKidId}`);
+  expect(leaked, 'the first kid’s document was still served from cache').toBe(false);
+
+  const denied = await page.evaluate(async (kidPath) =>
+    (window as unknown as { __mk: { serverRead(path: string): Promise<string> } })
+      .__mk.serverRead(kidPath), `families/${familyId}/kids/${firstKidId}`);
+  // rules deny it too: cache isolation is the fix, not the only guard
+  expect(denied).toMatch(/permission-denied/);
 });
 
 test('a draft written offline survives a reload and syncs', async ({ page, context }) => {
@@ -4092,7 +4225,7 @@ magick -size 2000x1500 gradient:'#0b7285-#fdfbf7' e2e/fixtures/photo.png
 # or: node -e "…" writing a minimal valid PNG; it must be genuinely decodable
 ```
 
-- [ ] **Step 4: Run it**
+- [ ] **Step 5: Run it**
 
 Run: `npm run test:e2e`
 Expected: both specs PASS.
@@ -4101,10 +4234,10 @@ Two failures to expect first, and what they mean rather than how to silence them
 - **A locator matching two elements** — the kid and parent shells can both be mounted in the same DOM if a navigation did not unmount. Scope the locator to a `group`/`main`, do not add `.first()` blindly.
 - **The photo upload failing with `permission-denied`** — the draft had not reached the server yet. That is the real constraint from Task 11, not a test artefact: the Storage rule reads the invoice. Wait for the saved confirmation before attaching, as the spec above does.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add e2e package.json package-lock.json
+git add app e2e package.json package-lock.json
 git commit -m "test(e2e): mobile-viewport Playwright run of the whole invoice loop"
 ```
 
