@@ -55,7 +55,11 @@ describe('two Firebase instances', () => {
       <FirebaseProvider value={kidFb}>{children}</FirebaseProvider>
     );
     const viaKid = renderHook(() => useDoc('families/famT'), { wrapper });
-    await waitFor(() => expect(viaKid.result.current.error).toBeInstanceOf(Error));
+    // the hook retries a denial a few times before surfacing it, in case it
+    // is the transient kind, so this needs longer than the 1s default
+    await waitFor(
+      () => expect(viaKid.result.current.error).toBeInstanceOf(Error), { timeout: 8000 },
+    );
   });
 
   it('signing out one instance leaves the other alone', async () => {

@@ -18,9 +18,11 @@
     "build:app": "npm run build -w @money-kids/app",
     "test:app": "npm run build -w @money-kids/functions && firebase emulators:exec --only firestore,auth,functions --project money-kids-test \"npm test -w @money-kids/app\"",
     "emulators": "npm run build -w @money-kids/functions && firebase emulators:start --only firestore,auth,functions,storage --project money-kids-test",
-    "seed:demo": "node scripts/seed-demo.mjs"
+    "seed:demo": "node scripts/seed-demo.mjs",
+    "test:e2e": "npm run build -w @money-kids/functions && firebase emulators:exec --only firestore,auth,functions,storage --project money-kids-test \"npx playwright test --config e2e/playwright.config.ts\""
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "firebase-tools": "^15.25.1"
   }
 }

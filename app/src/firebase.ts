@@ -2,7 +2,7 @@ import { initializeApp, type FirebaseApp } from 'firebase/app';
 import { connectAuthEmulator, getAuth, type Auth } from 'firebase/auth';
 import {
   connectFirestoreEmulator, getFirestore, initializeFirestore, memoryLocalCache,
-  persistentLocalCache, persistentMultipleTabManager, type Firestore,
+  persistentLocalCache, type Firestore,
 } from 'firebase/firestore';
 import { connectFunctionsEmulator, getFunctions, type Functions } from 'firebase/functions';
 import { connectStorageEmulator, getStorage, type FirebaseStorage } from 'firebase/storage';
@@ -27,21 +27,29 @@ export const KID_APP_NAME = 'kid';
 
 /**
  * Persistent cache is what lets a kid draft an invoice with no signal and
- * have it sync later, which the spec requires.
+ * have it sync later, which the spec requires. It needs IndexedDB: jsdom has
+ * none and a browser in private mode can refuse it, so fall back to memory
+ * rather than failing to start.
  *
- * It needs IndexedDB. jsdom has none, and a browser in private mode can
- * refuse it, so fall back to the memory cache rather than failing to start:
- * a kid who cannot cache still gets a working online app. (The component
- * suite therefore runs on the memory cache — persistence across a reload is
- * verified by the Playwright pass.)
+ * The KID instance persists; the parent one does not, and that split is
+ * deliberate and evidence-backed. With persistence on the parent instance,
+ * the app stalls in a real browser immediately after sign-up: the client is
+ * created unauthenticated at module load, a brand-new user signs in on top
+ * of it, and from then on its listeners never receive remote events — the
+ * session sits on "loading" forever. Bisected in the Playwright run
+ * (kid-only persistence passes, parent-only reproduces the stall) with
+ * Firestore debug logging showing a healthy persistence layer, so the fault
+ * is in that transition rather than in IndexedDB.
+ *
+ * Nothing is lost by it: only the kid is promised offline drafting, and the
+ * parent flows — reviewing, approving, paying — are online actions through
+ * callables. Revisit if the parent ever needs offline support.
  */
-function firestoreFor(app: FirebaseApp): Firestore {
-  const canPersist = typeof indexedDB !== 'undefined';
+function firestoreFor(app: FirebaseApp, label: 'parent' | 'kid'): Firestore {
+  const canPersist = typeof indexedDB !== 'undefined' && label === 'kid';
   try {
     return initializeFirestore(app, {
-      localCache: canPersist
-        ? persistentLocalCache({ tabManager: persistentMultipleTabManager() })
-        : memoryLocalCache(),
+      localCache: canPersist ? persistentLocalCache() : memoryLocalCache(),
     });
   } catch {
     // already initialized for this app (hot reload, or a second call)
@@ -55,7 +63,7 @@ function bundle(label: 'parent' | 'kid'): FirebaseBundle {
   // each other
   const app = initializeApp(config, label);
   const auth = getAuth(app);
-  const db = firestoreFor(app);
+  const db = firestoreFor(app, label);
   const fns = getFunctions(app);
   const storage = getStorage(app);
   if (import.meta.env.VITE_USE_EMULATORS) {

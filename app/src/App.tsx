@@ -46,7 +46,7 @@ function Shell() {
     // an invited parent needs /join before they have any family
     return (
       <Routes>
-        <Route path="/join" element={<JoinParent />} />
+        <Route path="join" element={<JoinParent />} />
         <Route path="*" element={<CreateFamily />} />
       </Routes>
     );

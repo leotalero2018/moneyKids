@@ -33,6 +33,8 @@ Recorded so a reviewer knows these were chosen, not overlooked:
 - **Bilingual, always.** Every string comes from `react-i18next` with matching `es`/`en` keys (the key-parity test enforces it). Kid copy is playful but never babyish — the app treats a kid as a professional sending real invoices.
 - **Assert Firestore state with `getDocFromServer` / `getDocsFromServer`**, never plain `getDoc`: a cached read is satisfied by a locally buffered write and passes before the server has it.
 - **`clearFirestoreData()` awaits `waitForPendingWrites` first**, on **both** instances once Task 1 lands — unacknowledged writes are otherwise replayed after the wipe and reappear in the next test.
+- **Nested `<Routes>` need RELATIVE child paths.** The parent shell renders inside App's `path="*"` route; an absolute child path like `/kids` does not match there, so every tab but the first bounces off the catch-all in a redirect loop. Playwright reports this as "waiting for scheduled navigations to finish" — no component test catches it, because they render screens directly.
+- **In an end-to-end test, wait for each action to LAND before navigating.** A `goto` straight after a click tears the page down mid-write or mid-callable. Wait for the app's own navigation, or for the on-screen evidence the action returned.
 - **A Firestore write promise resolves on SERVER acknowledgement.** `setDoc`/`commit` never resolve while offline, so any flow the spec expects to work without a signal must use the locally-assigned id and hand the pending promise back for error reporting instead of awaiting it. `createDraft` returns `{ id, written }` for exactly this reason.
 - **An `onSnapshot` error is terminal — the listener does not retry.** Combined with optimistic creation, that makes a rule which dereferences `resource.data` on a missing document fatal: the client attaches a listener to an id the server has not seen yet, the rule errors, and the listener is dead for good. Kid read rules therefore allow `resource == null`.
 - **A kid cannot `get` a document that does not exist.** *(Superseded in Task 11: the invoice `get` rule now allows `resource == null`, so a missing id reads as "does not exist". The constraint still holds for any rule that has not been given that guard.)* Their read rules dereference `resource.data.kidId`, which is an evaluation error — and so a denial — when the document is missing. Never assert absence with a direct `get`; use the kid's own constrained query and assert the id is not listed, which is how the UI observes it too.
@@ -3574,6 +3576,11 @@ import {
  * It needs IndexedDB. jsdom has none, and a browser in private mode can
  * refuse it, so fall back to the memory cache rather than failing to start:
  * a kid who cannot cache still gets a working online app.
+ *
+ * ONLY the kid instance persists. With persistence on the parent instance
+ * the app stalls in a real browser right after sign-up — the client starts
+ * unauthenticated at module load, a new user signs in on top of it, and its
+ * listeners then never receive remote events. Bisected under Playwright.
  */
 function firestoreFor(app: FirebaseApp): Firestore {
   const canPersist = typeof indexedDB !== 'undefined';

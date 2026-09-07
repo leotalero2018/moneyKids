@@ -49,7 +49,9 @@ describe('useDoc', () => {
 
   it('surfaces a permission error instead of hanging in loading', async () => {
     const { result } = renderHook(() => useDoc('families/nope/kids/k1'));
-    await waitFor(() => expect(result.current.error).toBeInstanceOf(Error));
+    // a denial is retried a few times first, in case it is the transient
+    // kind (a write granting access still in flight), so give it room
+    await waitFor(() => expect(result.current.error).toBeInstanceOf(Error), { timeout: 8000 });
     expect(result.current.loading).toBe(false);
   });
 });
