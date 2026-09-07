@@ -68,18 +68,44 @@ export function computeDeductions(gross: number, rules: DeductionRule[]): Deduct
 
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 
+/**
+ * How many minor units make one major unit, per currency.
+ *
+ * This table is deliberate and load-bearing. The obvious implementation —
+ * asking `Intl.NumberFormat(...).resolvedOptions().maximumFractionDigits` —
+ * is WRONG for money, because the answer depends on the CLDR data the
+ * runtime happens to ship: COP resolves to 0 on one Node build and 2 on
+ * another, and the same divergence exists between browsers and Android
+ * WebView versions. Getting it wrong is not a formatting nit — it makes
+ * `parseMajor('1234', 'COP')` return 123400 instead of 1234, a 100x error in
+ * a ledger, on some devices and not others.
+ *
+ * The spec's own words: "COP has 0 minor digits". That is a product decision
+ * about how these families count money, not a fact to look up at runtime.
+ *
+ * Adding a currency here is the ONLY way to support it — an unknown code
+ * throws rather than defaulting to 2, because a guessed scale is worse than
+ * a refused write.
+ */
+const MINOR_DIGITS: Readonly<Record<string, number>> = {
+  // zero-decimal: priced in whole units in everyday use
+  COP: 0, CLP: 0, JPY: 0, KRW: 0, PYG: 0, ISK: 0, VND: 0,
+  // two-decimal
+  USD: 2, EUR: 2, GBP: 2, MXN: 2, ARS: 2, PEN: 2, BRL: 2, CAD: 2, AUD: 2,
+  CHF: 2, DOP: 2, UYU: 2, BOB: 2, CRC: 2, GTQ: 2, HNL: 2, NIO: 2, PAB: 2,
+};
+
+/** The currencies a family may be created in — the table is the source of truth. */
+export const SUPPORTED_CURRENCIES: readonly string[] = Object.keys(MINOR_DIGITS).sort();
+
 export function minorDigits(currency: string): number {
   if (typeof currency !== 'string' || !CURRENCY_PATTERN.test(currency)) {
     throw new Error('currency must be a three-letter uppercase ISO 4217 code');
   }
-  let digits: number | undefined;
-  try {
-    digits = new Intl.NumberFormat('en', { style: 'currency', currency })
-      .resolvedOptions().maximumFractionDigits;
-  } catch {
-    throw new Error(`currency ${currency} is not a known ISO 4217 code`);
+  const digits = MINOR_DIGITS[currency];
+  if (digits === undefined) {
+    throw new Error(`currency ${currency} is not supported; add it to MINOR_DIGITS`);
   }
-  if (digits === undefined) throw new Error(`currency ${currency} has no known minor unit`);
   return digits;
 }
 

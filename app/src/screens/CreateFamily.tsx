@@ -2,13 +2,16 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { collection, doc, writeBatch } from 'firebase/firestore';
+import { SUPPORTED_CURRENCIES } from '@money-kids/shared';
 import { auth, db } from '../firebase.js';
 import { Button } from '../components/Button.js';
 import { ErrorBanner } from '../components/ErrorBanner.js';
 import type { Language } from '../i18n/index.js';
 import styles from './SignIn.module.css';
 
-export const SUPPORTED_CURRENCIES = ['COP', 'USD', 'EUR', 'MXN', 'ARS', 'CLP', 'PEN', 'BRL'] as const;
+// the currency list comes from the shared minor-unit table: offering a
+// currency the math cannot scale would break every amount in that family
+export { SUPPORTED_CURRENCIES };
 
 export function CreateFamily() {
   const { t, i18n } = useTranslation();
