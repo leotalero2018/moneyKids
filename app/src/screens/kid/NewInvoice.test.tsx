@@ -131,6 +131,62 @@ describe('NewInvoice at 5-8', () => {
   });
 });
 
+describe('sending from the builder', () => {
+  it('saves a draft, then sends it with its event', async () => {
+    await signInTestKid(await seedKid(2016));
+    renderNew();
+    await userEvent.click(await screen.findByRole('button', { name: /ayudar/i }));
+    await userEvent.type(screen.getByLabelText(/qué hiciste/i), 'Ordené mi cuarto');
+    await userEvent.type(screen.getByLabelText(/cuánto/i), '4000');
+    await userEvent.click(screen.getByRole('button', { name: /guardar/i }));
+
+    // the draft exists and the send button appears only now, because photos
+    // and sending both need an invoice that has reached the server
+    await userEvent.click(await screen.findByRole('button', { name: /enviar/i }));
+    await waitFor(async () => {
+      const all = await invoices();
+      expect(all.size).toBe(1);
+      expect(all.docs[0]!.get('status')).toBe('sent');
+      expect(all.docs[0]!.get('eventCount')).toBe(1);
+    }, { timeout: 5000 });
+  });
+
+  it('a 5-8 invoice cannot be sent until a photo has synced', async () => {
+    await signInTestKid(await seedKid(2020)); // age 6
+    renderNew();
+    await userEvent.click(await screen.findByRole('button', { name: /valentía/i }));
+    await userEvent.click(screen.getAllByTestId('price-choice')[0]!);
+    await userEvent.click(screen.getByRole('button', { name: /guardar/i }));
+
+    // at this age the kid typed nothing, so with no photo there is nothing
+    // for a parent to review — the send button stays disabled and says why
+    const send = await screen.findByRole('button', { name: /enviar/i });
+    expect(send).toBeDisabled();
+    expect(screen.getByText(/agrega una foto/i)).toBeInTheDocument();
+
+    // once a photo is attached, sending unlocks
+    const id = (await invoices()).docs[0]!.id;
+    await seedDoc(`families/${familyId}/invoices/${id}`, {
+      kidId: 'k1', activityId: null, description: 'Valentía',
+      photoPaths: [`families/${familyId}/kids/k1/invoices/${id}/p0.jpg`],
+      status: 'draft', requestedAmount: 1, eventCount: 0, createdAt: new Date(),
+      category: 'courage',
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /enviar/i })).toBeEnabled(), { timeout: 5000 });
+  });
+
+  it('an 8-12 invoice can be sent without a photo, because it has words', async () => {
+    await signInTestKid(await seedKid(2016));
+    renderNew();
+    await userEvent.click(await screen.findByRole('button', { name: /ayudar/i }));
+    await userEvent.type(screen.getByLabelText(/qué hiciste/i), 'Ordené mi cuarto');
+    await userEvent.type(screen.getByLabelText(/cuánto/i), '4000');
+    await userEvent.click(screen.getByRole('button', { name: /guardar/i }));
+    expect(await screen.findByRole('button', { name: /enviar/i })).toBeEnabled();
+  });
+});
+
 describe('InvoicePhotos', () => {
   it('lists a photo with a remove control, and removing detaches it', async () => {
     await signInTestKid(await seedKid(2016));

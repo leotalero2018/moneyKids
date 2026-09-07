@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { doc, getDoc } from 'firebase/firestore';
 import { minorDigits, parseMajor } from '@money-kids/shared';
 import { useFirebase } from '../../firebase/FirebaseContext.js';
 import { useKidSession } from '../../kid/KidSessionContext.js';
-import { createDraft } from '../../lib/kidInvoice.js';
+import { createDraft, sendInvoice } from '../../lib/kidInvoice.js';
 import { Button } from '../../components/Button.js';
 import { Card } from '../../components/Card.js';
 import { ErrorBanner } from '../../components/ErrorBanner.js';
@@ -14,6 +14,7 @@ import { PillarIcon } from '../../components/PillarIcon.js';
 import { Spinner } from '../../components/Spinner.js';
 import { InvoicePhotos } from './InvoicePhotos.js';
 import type { Pillar } from '../../lib/catalog.js';
+import type { InvoiceDoc } from '../../lib/invoiceActions.js';
 import styles from './NewInvoice.module.css';
 
 const PILLARS: Pillar[] = ['learn', 'courage', 'ideas', 'help'];
@@ -25,6 +26,7 @@ export function NewInvoice() {
   const fb = useFirebase();
   const { familyId, kidId, family, ageMode, status } = useKidSession();
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   const activityId = params.get('activity');
 
   const [description, setDescription] = useState('');
@@ -39,6 +41,12 @@ export function NewInvoice() {
   // kid does not type, so the photo carries the evidence and a tapped pillar
   // stands in for words
   const photoFirst = ageMode === '5-8';
+  const [photoCount, setPhotoCount] = useState(0);
+  // at 5-8 the kid types nothing — the tapped pillar stands in for words — so
+  // an invoice with no photo carries neither description nor evidence and is
+  // not reviewable. The photo IS the description in this mode, so sending
+  // without one is blocked rather than merely discouraged.
+  const canSend = !photoFirst || photoCount > 0;
 
   // prefill from the activity the kid tapped on the board
   useEffect(() => {
@@ -57,6 +65,18 @@ export function NewInvoice() {
     () => (family ? PRICE_CHOICES.map((major) => major * 10 ** minorDigits(family.currency)) : []),
     [family],
   );
+
+  async function run(action: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+    } catch {
+      setError(t('common.error'));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function save() {
     if (!familyId || !kidId || !family) return;
@@ -173,7 +193,26 @@ export function NewInvoice() {
       ) : (
         <>
           <p role="status">{t('kidNew.saved')}</p>
-          <InvoicePhotos familyId={familyId} kidId={kidId} invoiceId={invoiceId} />
+          <InvoicePhotos
+            familyId={familyId} kidId={kidId} invoiceId={invoiceId}
+            onCountChange={setPhotoCount}
+          />
+          {!canSend && <p role="status">{t('kidNew.needPhoto')}</p>}
+          <Button
+            disabled={busy || !canSend}
+            onClick={() => run(async () => {
+              // read the invoice back rather than reconstructing it: the send
+              // needs the server's eventCount and status, not our guesses
+              const snap = await getDoc(doc(fb.db, `families/${familyId}/invoices/${invoiceId}`));
+              await sendInvoice(fb, {
+                familyId,
+                invoice: { id: invoiceId, ...snap.data() } as InvoiceDoc,
+              });
+              navigate('/kid/invoices');
+            })}
+          >
+            {t('kidNew.send')}
+          </Button>
         </>
       )}
     </div>

@@ -2671,28 +2671,8 @@ describe('photos', () => {
     expect(await screen.findByRole('button', { name: /enviar/i })).toBeEnabled();
   });
 
-  it('removing a photo detaches it from the invoice', async () => {
-    await signInTestKid(await seedKid(2016));
-    renderNew();
-    await userEvent.type(await screen.findByLabelText(/qué hiciste/i), 'Con foto');
-    await userEvent.type(screen.getByLabelText(/cuánto/i), '1000');
-    await userEvent.click(screen.getByRole('button', { name: /guardar/i }));
-    await screen.findByRole('button', { name: /agregar foto/i });
-
-    // the upload itself needs a real browser (see the gap note below), so
-    // attach the path the way a completed upload would and prove the removal
-    const all = await invoices();
-    const id = all.docs[0]!.id;
-    const path = `families/${familyId}/kids/k1/invoices/${id}/seeded.jpg`;
-    await seedDoc(`families/${familyId}/invoices/${id}`, {
-      ...(all.docs[0]!.data() as Record<string, never>), photoPaths: [path],
-    });
-    await userEvent.click(await screen.findByRole('button', { name: /quitar/i }));
-    await waitFor(async () => {
-      const after = await invoices();
-      expect(after.docs[0]!.get('photoPaths')).toEqual([]);
-    }, { timeout: 5000 });
-  });
+  // (photo removal and the 8-photo cap are covered in Task 6, where
+  // InvoicePhotos is built; this block only adds what the send gate needs)
 });
 
 describe('sending from the builder', () => {

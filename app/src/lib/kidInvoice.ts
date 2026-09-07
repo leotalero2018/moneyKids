@@ -1,7 +1,12 @@
-import { collection, deleteDoc, doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import {
+  collection, deleteDoc, doc, serverTimestamp, setDoc, updateDoc, writeBatch,
+} from 'firebase/firestore';
 import type { FirebaseBundle } from '../firebase.js';
+import type { InvoiceDoc } from './invoiceActions.js';
 
 const MAX_DESCRIPTION = 1000;
+const MAX_NOTE = 500;
+const SENDABLE = ['draft', 'returned', 'countered'] as const;
 const KID_EDITABLE = ['draft', 'returned', 'countered'] as const;
 type KidEditable = typeof KID_EDITABLE[number];
 
@@ -97,4 +102,42 @@ export async function deleteDraft(
   fb: FirebaseBundle, familyId: string, invoiceId: string,
 ): Promise<void> {
   await deleteDoc(doc(fb.db, `families/${familyId}/invoices/${invoiceId}`));
+}
+
+/**
+ * Transition into `sent`, batched with its event — the invoice rule requires
+ * existsAfter(events/e{newEventCount}) and the event rule checks `from`
+ * against the pre-batch status, so neither write survives alone.
+ *
+ * `requestedAmount` on the event is required by the rules for every `→ sent`
+ * transition and forbidden on any other: it snapshots the ask as of this
+ * send, which is what keeps the negotiation history readable after a revision.
+ */
+export async function sendInvoice(fb: FirebaseBundle, args: {
+  familyId: string;
+  invoice: InvoiceDoc;
+  note?: string;
+}): Promise<void> {
+  const uid = fb.auth.currentUser?.uid;
+  if (!uid) throw new Error('no kid session');
+  if (!SENDABLE.includes(args.invoice.status as typeof SENDABLE[number])) {
+    throw new Error(`an invoice cannot be sent from ${args.invoice.status}`);
+  }
+  const note = args.note ?? '';
+  if (note.length > MAX_NOTE) throw new Error(`note must be at most ${MAX_NOTE} characters`);
+
+  const nextCount = args.invoice.eventCount + 1;
+  const batch = writeBatch(fb.db);
+  batch.update(doc(fb.db, `families/${args.familyId}/invoices/${args.invoice.id}`), {
+    status: 'sent', eventCount: nextCount,
+  });
+  batch.set(
+    doc(fb.db, `families/${args.familyId}/invoices/${args.invoice.id}/events/e${nextCount}`),
+    {
+      from: args.invoice.status, to: 'sent', actorUid: uid,
+      at: serverTimestamp(), note, kidId: args.invoice.kidId,
+      requestedAmount: args.invoice.requestedAmount,
+    },
+  );
+  await batch.commit();
 }

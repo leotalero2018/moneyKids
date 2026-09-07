@@ -6,7 +6,8 @@ import { signOut } from 'firebase/auth';
 import { parentFb, kidBundle } from '../firebase.js';
 import { callables } from './callables.js';
 import { clearFirestoreData, seedDoc, signInTestParent, signInTestKid } from '../test/emulator.js';
-import { createDraft, updateDraft, deleteDraft } from './kidInvoice.js';
+import { createDraft, updateDraft, deleteDraft, sendInvoice } from './kidInvoice.js';
+import type { InvoiceDoc } from './invoiceActions.js';
 
 const familyId = 'famDraft';
 
@@ -159,5 +160,80 @@ describe('deleteDraft', () => {
     await expect(deleteDraft(kidFb, familyId, 'sent1')).rejects.toThrow();
     // and it is still there afterwards
     expect((await getDocsFromServer(mine)).docs.map((d) => d.id)).toContain('sent1');
+  });
+});
+
+async function load(invoiceId: string): Promise<InvoiceDoc> {
+  const snap = await getDocFromServer(
+    doc(kidBundle().db, `families/${familyId}/invoices/${invoiceId}`),
+  );
+  return { ...snap.data(), id: snap.id } as InvoiceDoc;
+}
+
+describe('sendInvoice', () => {
+  it('sends a draft with a matching event that snapshots the amount', async () => {
+    const kidFb = kidBundle();
+    const id = await createDraft(kidFb, {
+      familyId, kidId: 'k1', activityId: null, description: 'Leí un libro', requestedAmount: 5000,
+    });
+    await sendInvoice(kidFb, { familyId, invoice: await load(id) });
+
+    const after = await getDocFromServer(doc(kidFb.db, `families/${familyId}/invoices/${id}`));
+    expect(after.get('status')).toBe('sent');
+    expect(after.get('eventCount')).toBe(1);
+    const event = await getDocFromServer(
+      doc(kidFb.db, `families/${familyId}/invoices/${id}/events/e1`),
+    );
+    expect(event.get('from')).toBe('draft');
+    expect(event.get('to')).toBe('sent');
+    expect(event.get('kidId')).toBe('k1');
+    expect(event.get('actorUid')).toBe(`kid_${familyId}_k1`);
+    // the amount as of THIS send, so the negotiation history survives edits
+    expect(event.get('requestedAmount')).toBe(5000);
+  });
+
+  it('resends a returned invoice at a revised amount, keeping both events', async () => {
+    const kidFb = kidBundle();
+    await seedDoc(`families/${familyId}/invoices/ret1`, {
+      kidId: 'k1', activityId: null, description: 'primera', photoPaths: [],
+      status: 'returned', requestedAmount: 5000, eventCount: 2, createdAt: new Date(),
+    });
+    await updateDraft(kidFb, {
+      familyId, invoiceId: 'ret1', status: 'returned',
+      fields: { description: 'mejor explicado', requestedAmount: 6000 },
+    });
+    await sendInvoice(kidFb, { familyId, invoice: await load('ret1') });
+
+    const after = await getDocFromServer(doc(kidFb.db, `families/${familyId}/invoices/ret1`));
+    expect(after.get('status')).toBe('sent');
+    expect(after.get('eventCount')).toBe(3);
+    const event = await getDocFromServer(
+      doc(kidFb.db, `families/${familyId}/invoices/ret1/events/e3`),
+    );
+    expect(event.get('from')).toBe('returned');
+    expect(event.get('requestedAmount')).toBe(6000); // the revised ask
+  });
+
+  it('refuses to send from a status the rules do not allow', async () => {
+    await seedDoc(`families/${familyId}/invoices/appr1`, {
+      kidId: 'k1', activityId: null, description: 'x', photoPaths: [],
+      status: 'approved', requestedAmount: 100, approvedAmount: 100, netAmount: 100,
+      deductions: [], eventCount: 2, createdAt: new Date(),
+    });
+    await expect(
+      sendInvoice(kidBundle(), { familyId, invoice: await load('appr1') }),
+    ).rejects.toThrow(/sent from/i);
+  });
+
+  it('rejects an over-long note before writing anything', async () => {
+    const kidFb = kidBundle();
+    const id = await createDraft(kidFb, {
+      familyId, kidId: 'k1', activityId: null, description: 'x', requestedAmount: 100,
+    });
+    await expect(sendInvoice(kidFb, {
+      familyId, invoice: await load(id), note: 'x'.repeat(501),
+    })).rejects.toThrow(/note/i);
+    expect((await getDocFromServer(doc(kidFb.db, `families/${familyId}/invoices/${id}`)))
+      .get('status')).toBe('draft');
   });
 });
