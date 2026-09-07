@@ -162,5 +162,24 @@
     "waysToEarn": "Formas de ganar",
     "freeForm": "Tengo otra idea",
     "empty": "Todavía no hay actividades. Pídele a tu mamá o papá que agreguen algunas."
+  },
+  "kidNew": {
+    "title": "Nueva factura",
+    "what": "¿Qué hiciste?",
+    "whatHint": "Una frase está bien.",
+    "howMuch": "¿Cuánto vale?",
+    "pickCategory": "¿Qué tipo fue?",
+    "pickPrice": "¿Cuánto vale?",
+    "save": "Guardar",
+    "send": "Enviar a mamá o papá",
+    "needDescription": "Cuéntame qué hiciste.",
+    "badAmount": "Escribe un precio válido.",
+    "photos": "Fotos",
+    "addPhoto": "Agregar foto",
+    "removePhoto": "Quitar",
+    "photoLimit": "Ya tienes 8 fotos.",
+    "photoFailed": "Esa foto no se pudo subir. Intenta otra vez. Necesitas internet para subir fotos.",
+    "needPhoto": "Agrega una foto de lo que hiciste para poder enviarla.",
+    "saved": "Guardada. Ahora puedes agregar fotos o enviarla."
   }
 }

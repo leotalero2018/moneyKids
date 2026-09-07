@@ -1,0 +1,22 @@
+.screen { padding: var(--s-4) var(--s-4) calc(var(--tap) + var(--s-6)); }
+.screen textarea, .screen input {
+  display: block; width: 100%; margin-bottom: var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--c-line); border-radius: var(--radius);
+}
+.screen label { display: block; font-size: var(--f-small); color: var(--c-ink-soft); }
+.pillars, .prices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: var(--s-2);
+  margin-bottom: var(--s-4);
+}
+.thumbs {
+  list-style: none;
+  margin: var(--s-3) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr));
+  gap: var(--s-2);
+}
+.thumbs img { width: 100%; border-radius: var(--radius); display: block; }

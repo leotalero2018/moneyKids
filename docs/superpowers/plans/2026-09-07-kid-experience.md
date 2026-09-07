@@ -2058,7 +2058,14 @@ function renderNew(search = '') {
 }
 
 async function invoices() {
-  return getDocsFromServer(collection(kidFb.db, `families/${familyId}/invoices`));
+  // constrained by kidId: rules do not filter queries, so an unconstrained
+  // list from a kid session is denied outright rather than trimmed. The
+  // denial reads "Property kidId is undefined on object", which is not an
+  // obvious way of saying "add the where clause".
+  return getDocsFromServer(query(
+    collection(kidFb.db, `families/${familyId}/invoices`),
+    where('kidId', '==', 'k1'),
+  ));
 }
 
 describe('NewInvoice at 8-12', () => {
@@ -2197,13 +2204,10 @@ export function NewInvoice() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // the one place age mode changes BEHAVIOR rather than tokens: at 5-8 the
+  // kid does not type, so the photo carries the evidence and a tapped pillar
+  // stands in for words
   const photoFirst = ageMode === '5-8';
-  const [photoCount, setPhotoCount] = useState(0);
-  // at 5-8 the kid types nothing — the tapped pillar stands in for words — so
-  // an invoice with no photo carries neither description nor evidence and is
-  // not reviewable. The photo is the description in this mode, so sending
-  // without one is blocked rather than merely discouraged.
-  const canSend = !photoFirst || photoCount > 0;
 
   // prefill from the activity the kid tapped on the board
   useEffect(() => {
@@ -2483,6 +2487,8 @@ export function InvoicePhotos({ familyId, kidId, invoiceId, onCountChange }: {
 Register the route: `kidRoutes` gets `{ path: 'new', element: <NewInvoice /> }`, and `KID_TABS` gets `{ to: '/kid/new', labelKey: 'kidNav.new' }`.
 
 **Photo upload is not covered by a component test.** jsdom cannot produce a real encoded image, and the Storage emulator would reject the stub blob's contents; the compression arithmetic and limits are unit-tested above, and Task 13's Playwright run uploads a real file through a real browser. That split is deliberate.
+
+**Scope note:** the send button, the `photoCount`/`canSend` state and the 5–8 photo gate belong to **Task 7**, which is where `sendInvoice` arrives. This task ends with a saved draft, its photo list, and no way to send — deliberately, so neither task ships state nothing reads. `InvoicePhotos` already accepts the optional `onCountChange` the gate will use.
 
 - [ ] **Step 5: Verify**
 

@@ -162,5 +162,24 @@
     "waysToEarn": "Ways to earn",
     "freeForm": "I have another idea",
     "empty": "No activities yet. Ask a grown-up to add some."
+  },
+  "kidNew": {
+    "title": "New invoice",
+    "what": "What did you do?",
+    "whatHint": "One sentence is fine.",
+    "howMuch": "How much is it worth?",
+    "pickCategory": "What kind was it?",
+    "pickPrice": "How much is it worth?",
+    "save": "Save",
+    "send": "Send to a grown-up",
+    "needDescription": "Tell me what you did.",
+    "badAmount": "Enter a valid price.",
+    "photos": "Photos",
+    "addPhoto": "Add photo",
+    "removePhoto": "Remove",
+    "photoLimit": "You already have 8 photos.",
+    "photoFailed": "That photo could not be uploaded. Try again. You need a connection to upload photos.",
+    "needPhoto": "Add a photo of what you did so you can send it.",
+    "saved": "Saved. Now you can add photos or send it."
   }
 }
