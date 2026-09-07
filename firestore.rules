@@ -106,6 +106,13 @@ service cloud.firestore {
           return newInv().photoPaths is list && newInv().photoPaths.size() <= 8;
         }
         function descriptionOk() { return boundedText(newInv().description, 1000); }
+        function categoryOk() {
+          // optional, but when present it is one of the spec's four pillars.
+          // A free-form invoice has no activityId to inherit a pillar from,
+          // so it carries its own.
+          return !newInv().keys().hasAny(['category'])
+            || newInv().category in ['learn', 'courage', 'ideas', 'help'];
+        }
         function transitionHasEvent() {
           // every transition increments eventCount and the same batch must
           // create the deterministic event doc e{newEventCount}
@@ -118,9 +125,11 @@ service cloud.firestore {
         allow list: if isFamilyParent() || (isFamilyKid() && resource.data.kidId == authKidId());
 
         allow create: if isFamilyKid()
-          && newInv().keys().hasOnly(['kidId', 'activityId', 'description', 'photoPaths', 'status', 'requestedAmount', 'eventCount', 'createdAt'])
+          && newInv().keys().hasOnly(['kidId', 'activityId', 'description', 'photoPaths', 'status', 'requestedAmount', 'eventCount', 'createdAt', 'category'])
           // hasOnly permits omissions — hasAll is what makes a partial invoice
-          // (and the surprises a missing field causes downstream) impossible
+          // (and the surprises a missing field causes downstream) impossible.
+          // `category` is deliberately absent from hasAll: it is optional, and
+          // every invoice Plans 1-2 wrote has none.
           && newInv().keys().hasAll(['kidId', 'activityId', 'description', 'photoPaths', 'status', 'requestedAmount', 'eventCount', 'createdAt'])
           && newInv().kidId == authKidId()
           && newInv().status == 'draft'
@@ -131,6 +140,7 @@ service cloud.firestore {
           // server-derived: the parent inbox orders by this, so a client must
           // not be able to choose where its invoice lands in the queue
           && newInv().createdAt == request.time
+          && categoryOk()
           && photosWithinCap();
 
         // kid edits in place (no transition); activityId editable only in draft
@@ -139,10 +149,11 @@ service cloud.firestore {
           && newInv().status == inv().status
           && newInv().diff(inv()).affectedKeys().hasOnly(
                inv().status == 'draft'
-                 ? ['description', 'photoPaths', 'requestedAmount', 'activityId']
-                 : ['description', 'photoPaths', 'requestedAmount'])
+                 ? ['description', 'photoPaths', 'requestedAmount', 'activityId', 'category']
+                 : ['description', 'photoPaths', 'requestedAmount', 'category'])
           && newInv().requestedAmount is int && newInv().requestedAmount > 0
           && descriptionOk()
+          && categoryOk()
           && photosWithinCap();
 
         // kid transition to sent (event required)
@@ -151,10 +162,11 @@ service cloud.firestore {
           && newInv().status == 'sent'
           && newInv().diff(inv()).affectedKeys().hasOnly(
                inv().status == 'draft'
-                 ? ['status', 'eventCount', 'description', 'photoPaths', 'requestedAmount', 'activityId']
-                 : ['status', 'eventCount', 'description', 'photoPaths', 'requestedAmount'])
+                 ? ['status', 'eventCount', 'description', 'photoPaths', 'requestedAmount', 'activityId', 'category']
+                 : ['status', 'eventCount', 'description', 'photoPaths', 'requestedAmount', 'category'])
           && newInv().requestedAmount is int && newInv().requestedAmount > 0
           && descriptionOk()
+          && categoryOk()
           && photosWithinCap()
           && transitionHasEvent();
 

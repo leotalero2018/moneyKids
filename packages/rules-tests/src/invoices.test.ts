@@ -197,6 +197,26 @@ describe('invoice lifecycle', () => {
       { createdAt: serverTimestamp() }));
   });
 
+  it('accepts an optional pillar category on a free-form invoice', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await assertSucceeds(setDoc(doc(kdb, 'families/fam1/invoices/cat1'),
+      { ...draft, category: 'courage' }));
+    // still optional: an invoice with no category remains valid
+    await assertSucceeds(setDoc(doc(kdb, 'families/fam1/invoices/cat2'), draft));
+    // and only the four pillars are categories
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/cat3'),
+      { ...draft, category: 'chores' }));
+    await assertFails(setDoc(doc(kdb, 'families/fam1/invoices/cat4'),
+      { ...draft, category: 7 }));
+  });
+
+  it('lets a kid change the category while the invoice is still theirs to edit', async () => {
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await setDoc(doc(kdb, 'families/fam1/invoices/cat5'), { ...draft, category: 'learn' });
+    await assertSucceeds(updateDoc(doc(kdb, 'families/fam1/invoices/cat5'), { category: 'ideas' }));
+    await assertFails(updateDoc(doc(kdb, 'families/fam1/invoices/cat5'), { category: 'chores' }));
+  });
+
   it('caps photos per invoice at 8 on create and on edit', async () => {
     const kdb = kidCtx(env, 'fam1', 'k1').firestore();
     const paths = (n: number) => Array.from({ length: n }, (_, i) => `families/fam1/kids/k1/invoices/inv1/p${i}.png`);

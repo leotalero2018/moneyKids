@@ -33,6 +33,7 @@ Recorded so a reviewer knows these were chosen, not overlooked:
 - **Bilingual, always.** Every string comes from `react-i18next` with matching `es`/`en` keys (the key-parity test enforces it). Kid copy is playful but never babyish — the app treats a kid as a professional sending real invoices.
 - **Assert Firestore state with `getDocFromServer` / `getDocsFromServer`**, never plain `getDoc`: a cached read is satisfied by a locally buffered write and passes before the server has it.
 - **`clearFirestoreData()` awaits `waitForPendingWrites` first**, on **both** instances once Task 1 lands — unacknowledged writes are otherwise replayed after the wipe and reappear in the next test.
+- **A kid cannot `get` a document that does not exist.** Their read rules dereference `resource.data.kidId`, which is an evaluation error — and so a denial — when the document is missing. Never assert absence with a direct `get`; use the kid's own constrained query and assert the id is not listed, which is how the UI observes it too.
 - **A family's subcollections cannot be created in the same batch as the family.** Rules authorize them through `isFamilyParent()`, which calls `exists()` on the member doc, and `exists()` sees only pre-batch state. Commit the family + member + pointer batch first, then write activities, kids, and everything else. (Family creation itself works because its rule uses `existsAfter`.)
 - **Wrap a screen in a session provider only if it uses that session.** A provider around a screen that does not need it subscribes to documents the current user may not read yet, surfacing as an unattributable `FirebaseError`.
 - Node ≥ 20.11, TypeScript `strict: true`, `typecheck` in every workspace, run in every task's verification. Component tests run under `firebase emulators:exec`.
@@ -1651,14 +1652,25 @@ describe('deleteDraft', () => {
       familyId, kidId: 'k1', activityId: null, description: 'x', requestedAmount: 100,
     });
     await deleteDraft(kidFb, familyId, id);
-    expect((await getDocFromServer(doc(kidFb.db, `families/${familyId}/invoices/${id}`))).exists())
-      .toBe(false);
+
+    // observe the absence through the kid's own constrained QUERY, not a
+    // direct get: the kid read rule dereferences resource.data.kidId, so
+    // getting a document that no longer exists is DENIED rather than
+    // returning an empty snapshot. A query simply stops listing it, which is
+    // also how the UI notices.
+    const mine = query(
+      collection(kidFb.db, `families/${familyId}/invoices`),
+      where('kidId', '==', 'k1'),
+    );
+    expect((await getDocsFromServer(mine)).docs.map((d) => d.id)).not.toContain(id);
 
     await seedDoc(`families/${familyId}/invoices/sent1`, {
       kidId: 'k1', activityId: null, description: 'x', photoPaths: [],
       status: 'sent', requestedAmount: 100, eventCount: 1, createdAt: new Date(),
     });
     await expect(deleteDraft(kidFb, familyId, 'sent1')).rejects.toThrow();
+    // and it is still there afterwards
+    expect((await getDocsFromServer(mine)).docs.map((d) => d.id)).toContain('sent1');
   });
 });
 ```
