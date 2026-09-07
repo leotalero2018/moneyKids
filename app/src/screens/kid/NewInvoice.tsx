@@ -102,11 +102,15 @@ export function NewInvoice() {
 
     setBusy(true);
     try {
-      const id = await createDraft(fb, {
+      const { id, written } = createDraft(fb, {
         familyId, kidId, activityId: activityId ?? null,
         description: text, requestedAmount: amount, category,
       });
-      setInvoiceId(id); // photos need a server-side invoice to attach to
+      // the id is usable at once, so the screen moves on immediately — with
+      // no signal the server ack may be minutes away, and the spec promises
+      // a kid can draft offline
+      setInvoiceId(id);
+      void written.catch(() => setError(t('common.error')));
     } catch {
       setError(t('common.error'));
     } finally {

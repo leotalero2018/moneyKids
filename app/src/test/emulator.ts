@@ -1,7 +1,7 @@
 import {
   createUserWithEmailAndPassword, signInWithCustomToken, signInWithEmailAndPassword,
 } from 'firebase/auth';
-import { waitForPendingWrites } from 'firebase/firestore';
+import { waitForPendingWrites, type Firestore } from 'firebase/firestore';
 import { auth, kidBundle, parentFb } from '../firebase.js';
 import { callables } from '../lib/callables.js';
 
@@ -33,13 +33,22 @@ export async function signInTestParent(uid: string): Promise<void> {
  * writes are replayed AFTER the wipe and reappear in the next test — which
  * looks exactly like "the clear didn't work".
  */
+/**
+ * waitForPendingWrites never resolves while an instance is offline with a
+ * queued write, which turns a stray `disableNetwork` in one test into a hung
+ * hook in the next. Bound the wait: flushing is the goal, hanging is not.
+ */
+async function flush(db: Firestore): Promise<void> {
+  await Promise.race([
+    waitForPendingWrites(db),
+    new Promise((resolve) => setTimeout(resolve, 3000)),
+  ]);
+}
+
 export async function clearFirestoreData(): Promise<void> {
   // BOTH instances: an unacknowledged write on either is replayed after the
   // wipe and turns up in the next test
-  await Promise.all([
-    waitForPendingWrites(parentFb.db),
-    waitForPendingWrites(kidBundle().db),
-  ]);
+  await Promise.all([flush(parentFb.db), flush(kidBundle().db)]);
   const res = await fetch(
     `http://127.0.0.1:8480/emulator/v1/projects/${PROJECT_ID}/databases/(default)/documents`,
     { method: 'DELETE' },

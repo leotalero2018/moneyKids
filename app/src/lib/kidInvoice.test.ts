@@ -44,10 +44,11 @@ beforeEach(async () => {
 describe('createDraft', () => {
   it('writes a draft the rules accept, with a server timestamp', async () => {
     const kidFb = kidBundle();
-    const id = await createDraft(kidFb, {
+    const { id, written } = createDraft(kidFb, {
       familyId, kidId: 'k1', activityId: null,
       description: 'Leí un libro', requestedAmount: 5000,
     });
+    await written;
     const snap = await getDocFromServer(doc(kidFb.db, `families/${familyId}/invoices/${id}`));
     expect(snap.get('status')).toBe('draft');
     expect(snap.get('eventCount')).toBe(0);
@@ -61,36 +62,40 @@ describe('createDraft', () => {
 
   it('stores an optional pillar category for a free-form invoice', async () => {
     const kidFb = kidBundle();
-    const id = await createDraft(kidFb, {
+    const { id, written } = createDraft(kidFb, {
       familyId, kidId: 'k1', activityId: null,
       description: 'Ordené mi cuarto', requestedAmount: 3000, category: 'help',
     });
+    await written;
     const snap = await getDocFromServer(doc(kidFb.db, `families/${familyId}/invoices/${id}`));
     expect(snap.get('category')).toBe('help');
   });
 
   it('cannot create an invoice for a sibling', async () => {
+    // the local write succeeds optimistically; the SERVER refuses it
     await expect(createDraft(kidBundle(), {
       familyId, kidId: 'k2', activityId: null, description: 'no', requestedAmount: 100,
-    })).rejects.toThrow();
+    }).written).rejects.toThrow();
   });
 
   it('refuses a non-positive amount and an over-long description locally', async () => {
-    await expect(createDraft(kidBundle(), {
+    // validation throws synchronously, before any write is queued
+    expect(() => createDraft(kidBundle(), {
       familyId, kidId: 'k1', activityId: null, description: 'x', requestedAmount: 0,
-    })).rejects.toThrow(/amount/i);
-    await expect(createDraft(kidBundle(), {
+    })).toThrow(/amount/i);
+    expect(() => createDraft(kidBundle(), {
       familyId, kidId: 'k1', activityId: null, description: 'x'.repeat(1001), requestedAmount: 100,
-    })).rejects.toThrow(/description/i);
+    })).toThrow(/description/i);
   });
 });
 
 describe('updateDraft', () => {
   it('edits the fields a draft allows', async () => {
     const kidFb = kidBundle();
-    const id = await createDraft(kidFb, {
+    const { id, written } = createDraft(kidFb, {
       familyId, kidId: 'k1', activityId: null, description: 'antes', requestedAmount: 5000,
     });
+    await written;
     await updateDraft(kidFb, {
       familyId, invoiceId: id, status: 'draft',
       fields: { description: 'después', requestedAmount: 6000, activityId: 'act1' },
@@ -105,9 +110,10 @@ describe('updateDraft', () => {
     // the rules allow activityId edits ONLY in draft; sending it from a
     // returned invoice would fail the whole write, losing the kid's edit
     const kidFb = kidBundle();
-    const id = await createDraft(kidFb, {
+    const { id, written } = createDraft(kidFb, {
       familyId, kidId: 'k1', activityId: 'act1', description: 'x', requestedAmount: 100,
     });
+    await written;
     await seedDoc(`families/${familyId}/invoices/${id}`, {
       kidId: 'k1', activityId: 'act1', description: 'x', photoPaths: [],
       status: 'returned', requestedAmount: 100, eventCount: 2, createdAt: new Date(),
@@ -137,9 +143,10 @@ describe('updateDraft', () => {
 describe('deleteDraft', () => {
   it('deletes a draft but not a sent invoice', async () => {
     const kidFb = kidBundle();
-    const id = await createDraft(kidFb, {
+    const { id, written } = createDraft(kidFb, {
       familyId, kidId: 'k1', activityId: null, description: 'x', requestedAmount: 100,
     });
+    await written;
     await deleteDraft(kidFb, familyId, id);
 
     // observe the absence through the kid's own constrained QUERY, not a
@@ -173,9 +180,10 @@ async function load(invoiceId: string): Promise<InvoiceDoc> {
 describe('sendInvoice', () => {
   it('sends a draft with a matching event that snapshots the amount', async () => {
     const kidFb = kidBundle();
-    const id = await createDraft(kidFb, {
+    const { id, written } = createDraft(kidFb, {
       familyId, kidId: 'k1', activityId: null, description: 'Leí un libro', requestedAmount: 5000,
     });
+    await written;
     await sendInvoice(kidFb, { familyId, invoice: await load(id) });
 
     const after = await getDocFromServer(doc(kidFb.db, `families/${familyId}/invoices/${id}`));
@@ -227,9 +235,10 @@ describe('sendInvoice', () => {
 
   it('rejects an over-long note before writing anything', async () => {
     const kidFb = kidBundle();
-    const id = await createDraft(kidFb, {
+    const { id, written } = createDraft(kidFb, {
       familyId, kidId: 'k1', activityId: null, description: 'x', requestedAmount: 100,
     });
+    await written;
     await expect(sendInvoice(kidFb, {
       familyId, invoice: await load(id), note: 'x'.repeat(501),
     })).rejects.toThrow(/note/i);

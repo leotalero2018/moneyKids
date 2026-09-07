@@ -197,6 +197,24 @@ describe('invoice lifecycle', () => {
       { createdAt: serverTimestamp() }));
   });
 
+  it('lets a kid read an invoice id that does not exist yet', async () => {
+    // load-bearing for optimistic creation: the client assigns the id and
+    // attaches a listener before the write reaches the server, and an
+    // onSnapshot error is TERMINAL — a rule that dereferences resource.data
+    // on a missing document kills the listener for good, so the kid would
+    // never see their own photos appear.
+    const kdb = kidCtx(env, 'fam1', 'k1').firestore();
+    await assertSucceeds(getDoc(doc(kdb, 'families/fam1/invoices/notyet')));
+    // ...and this must not become a way to read a sibling's invoice
+    await seed(env, async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'families/fam1/invoices/sib1'), {
+        kidId: 'k2', activityId: null, description: 'x', photoPaths: [],
+        status: 'sent', requestedAmount: 100, eventCount: 1, createdAt: new Date(),
+      });
+    });
+    await assertFails(getDoc(doc(kdb, 'families/fam1/invoices/sib1')));
+  });
+
   it('accepts an optional pillar category on a free-form invoice', async () => {
     const kdb = kidCtx(env, 'fam1', 'k1').firestore();
     await assertSucceeds(setDoc(doc(kdb, 'families/fam1/invoices/cat1'),

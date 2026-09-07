@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { hasPin, lockParentView } from '../lib/pin.js';
+import { endKidSession } from '../kid/kidSessionReset.js';
 import { Button } from './Button.js';
 import { ErrorBanner } from './ErrorBanner.js';
 
@@ -20,7 +21,16 @@ export function ProfileSwitcher({ direction }: { direction: 'to-kid' | 'to-paren
     // no PIN check here: PinGate guards the parent shell itself, so a kid
     // tapping this lands on the prompt rather than in the parent view
     return (
-      <Button variant="secondary" onClick={() => navigate('/')}>
+      <Button
+        variant="secondary"
+        onClick={async () => {
+          // the kid is done with the device: drop their session and cache
+          // before the parent view comes back. A failed erasure must not
+          // strand them here, so navigate either way.
+          await endKidSession().catch(() => undefined);
+          navigate('/');
+        }}
+      >
         {t('switcher.toParent')}
       </Button>
     );

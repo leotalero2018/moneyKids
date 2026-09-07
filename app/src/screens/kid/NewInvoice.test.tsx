@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import {
-  collection, doc, getDocsFromServer, query, serverTimestamp, setDoc, where, writeBatch,
+  collection, doc, getDocsFromServer, query, serverTimestamp, setDoc, updateDoc, where, writeBatch,
 } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { parentFb, kidBundle } from '../../firebase.js';
@@ -51,6 +51,21 @@ function renderNew(search = '') {
       <KidSessionProvider><NewInvoice /></KidSessionProvider>
     </MemoryRouter>,
   );
+}
+
+/**
+ * The builder advances as soon as Firestore assigns an id locally, which is
+ * what makes offline drafting work — so a test that wants to act on the
+ * SERVER copy has to wait for it to arrive first.
+ */
+async function waitForServerDraft(): Promise<string> {
+  let id: string | undefined;
+  await waitFor(async () => {
+    const all = await invoices();
+    expect(all.size).toBe(1);
+    id = all.docs[0]!.id;
+  }, { timeout: 5000 });
+  return id!;
 }
 
 async function invoices() {
@@ -142,6 +157,7 @@ describe('sending from the builder', () => {
 
     // the draft exists and the send button appears only now, because photos
     // and sending both need an invoice that has reached the server
+    await waitForServerDraft();
     await userEvent.click(await screen.findByRole('button', { name: /enviar/i }));
     await waitFor(async () => {
       const all = await invoices();
@@ -164,13 +180,13 @@ describe('sending from the builder', () => {
     expect(send).toBeDisabled();
     expect(screen.getByText(/agrega una foto/i)).toBeInTheDocument();
 
-    // once a photo is attached, sending unlocks
-    const id = (await invoices()).docs[0]!.id;
-    await seedDoc(`families/${familyId}/invoices/${id}`, {
-      kidId: 'k1', activityId: null, description: 'Valentía',
+    // once a photo is attached, sending unlocks. Attach it the way the app
+    // does — a kid may edit photoPaths on their own draft — rather than
+    // overwriting the document through the admin path, which would race with
+    // the still-pending create and clobber it
+    const id = await waitForServerDraft();
+    await updateDoc(doc(kidBundle().db, `families/${familyId}/invoices/${id}`), {
       photoPaths: [`families/${familyId}/kids/k1/invoices/${id}/p0.jpg`],
-      status: 'draft', requestedAmount: 1, eventCount: 0, createdAt: new Date(),
-      category: 'courage',
     });
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /enviar/i })).toBeEnabled(), { timeout: 5000 });
@@ -199,13 +215,10 @@ describe('InvoicePhotos', () => {
 
     // the upload itself needs a real browser (jsdom has no image encoder), so
     // attach a path the way a finished upload would and prove the removal
-    const all = await invoices();
-    const id = all.docs[0]!.id;
+    const id = await waitForServerDraft();
     const path = `families/${familyId}/kids/k1/invoices/${id}/seeded.jpg`;
-    await seedDoc(`families/${familyId}/invoices/${id}`, {
-      kidId: 'k1', activityId: null, description: 'Con foto', photoPaths: [path],
-      status: 'draft', requestedAmount: 1000, eventCount: 0, createdAt: new Date(),
-      category: 'help',
+    await updateDoc(doc(kidBundle().db, `families/${familyId}/invoices/${id}`), {
+      photoPaths: [path],
     });
     await userEvent.click(await screen.findByRole('button', { name: /quitar/i }));
     await waitFor(async () => {
@@ -223,13 +236,11 @@ describe('InvoicePhotos', () => {
     await userEvent.click(screen.getByRole('button', { name: /guardar/i }));
     await screen.findByRole('button', { name: /agregar foto/i });
 
-    const id = (await invoices()).docs[0]!.id;
+    const id = await waitForServerDraft();
     const paths = Array.from({ length: 8 }, (_, i) =>
       `families/${familyId}/kids/k1/invoices/${id}/p${i}.jpg`);
-    await seedDoc(`families/${familyId}/invoices/${id}`, {
-      kidId: 'k1', activityId: null, description: 'Ocho fotos', photoPaths: paths,
-      status: 'draft', requestedAmount: 1000, eventCount: 0, createdAt: new Date(),
-      category: 'help',
+    await updateDoc(doc(kidBundle().db, `families/${familyId}/invoices/${id}`), {
+      photoPaths: paths,
     });
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /agregar foto/i })).toBeDisabled());

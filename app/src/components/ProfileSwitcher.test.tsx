@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { initI18n } from '../i18n/index.js';
+import { kidBundle } from '../firebase.js';
 import { clearPin, setPin, isParentViewLocked } from '../lib/pin.js';
 import { ProfileSwitcher } from './ProfileSwitcher.js';
 
@@ -39,10 +40,13 @@ describe('ProfileSwitcher', () => {
     expect(screen.getByTestId('where')).toHaveTextContent('/settings');
   });
 
-  it('coming back just navigates — PinGate is what asks for the PIN', async () => {
+  it('coming back ends the kid session and navigates', async () => {
     await setPin('1234');
     renderSwitcher('to-parent');
     await userEvent.click(screen.getByRole('button', { name: /volver con un adulto/i }));
     await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/'));
+    // PinGate is what asks for the PIN; this only guarantees the kid's
+    // session and cache are gone before the parent view returns
+    expect(kidBundle().auth.currentUser).toBeNull();
   });
 });

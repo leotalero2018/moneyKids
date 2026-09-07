@@ -34,19 +34,33 @@ function assertDescription(description: string): void {
   }
 }
 
+export interface DraftHandle {
+  /** usable immediately: Firestore assigns the id locally */
+  id: string;
+  /** resolves when the SERVER has the write; rejects if the rules refuse it */
+  written: Promise<void>;
+}
+
 /**
  * A draft is a real document, written before any photo upload: the Storage
  * rules authorize an upload by reading the linked invoice, and a draft that
  * only lived in component state would vanish with the device.
  *
+ * Deliberately NOT async. `setDoc` resolves only when the server
+ * acknowledges the write, so awaiting it offline never returns — and the
+ * spec promises a kid can draft with no signal. The document is applied to
+ * the local cache immediately, so the id and the draft are usable at once;
+ * `written` is handed back separately so a caller can still surface a
+ * rejection (a rules refusal, say) when it eventually arrives.
+ *
  * The keys here are exactly the rules' whitelist. Adding one outside it —
  * even a harmless one — makes every create fail.
  */
-export async function createDraft(fb: FirebaseBundle, input: DraftInput): Promise<string> {
+export function createDraft(fb: FirebaseBundle, input: DraftInput): DraftHandle {
   assertAmount(input.requestedAmount);
   assertDescription(input.description);
   const ref = doc(collection(fb.db, `families/${input.familyId}/invoices`));
-  await setDoc(ref, {
+  const written = setDoc(ref, {
     kidId: input.kidId,
     activityId: input.activityId,
     description: input.description,
@@ -59,7 +73,7 @@ export async function createDraft(fb: FirebaseBundle, input: DraftInput): Promis
     // and the field is optional in the rules
     ...(input.category ? { category: input.category } : {}),
   });
-  return ref.id;
+  return { id: ref.id, written };
 }
 
 export async function updateDraft(fb: FirebaseBundle, args: {

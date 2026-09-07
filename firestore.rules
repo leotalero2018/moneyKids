@@ -121,7 +121,15 @@ service cloud.firestore {
             && existsAfter(/databases/$(database)/documents/families/$(familyId)/invoices/$(invoiceId)/events/$('e' + string(newInv().eventCount)));
         }
 
-        allow get: if isFamilyParent() || (isFamilyKid() && inv().kidId == authKidId());
+        // `resource == null` FIRST: the client assigns an invoice id and
+        // attaches a listener before the write reaches the server, and an
+        // onSnapshot error is terminal. Dereferencing resource.data on a
+        // missing document would kill that listener permanently — the kid
+        // would never see their own draft's photos appear. Allowing the read
+        // of a missing id leaks nothing: it returns "does not exist", and a
+        // sibling's EXISTING invoice is still denied by the kidId check.
+        allow get: if isFamilyParent()
+          || (isFamilyKid() && (resource == null || inv().kidId == authKidId()));
         allow list: if isFamilyParent() || (isFamilyKid() && resource.data.kidId == authKidId());
 
         allow create: if isFamilyKid()

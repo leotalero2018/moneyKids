@@ -1,6 +1,9 @@
 import { initializeApp, type FirebaseApp } from 'firebase/app';
 import { connectAuthEmulator, getAuth, type Auth } from 'firebase/auth';
-import { connectFirestoreEmulator, getFirestore, type Firestore } from 'firebase/firestore';
+import {
+  connectFirestoreEmulator, getFirestore, initializeFirestore, memoryLocalCache,
+  persistentLocalCache, persistentMultipleTabManager, type Firestore,
+} from 'firebase/firestore';
 import { connectFunctionsEmulator, getFunctions, type Functions } from 'firebase/functions';
 import { connectStorageEmulator, getStorage, type FirebaseStorage } from 'firebase/storage';
 
@@ -22,13 +25,37 @@ export interface FirebaseBundle {
 
 export const KID_APP_NAME = 'kid';
 
+/**
+ * Persistent cache is what lets a kid draft an invoice with no signal and
+ * have it sync later, which the spec requires.
+ *
+ * It needs IndexedDB. jsdom has none, and a browser in private mode can
+ * refuse it, so fall back to the memory cache rather than failing to start:
+ * a kid who cannot cache still gets a working online app. (The component
+ * suite therefore runs on the memory cache — persistence across a reload is
+ * verified by the Playwright pass.)
+ */
+function firestoreFor(app: FirebaseApp): Firestore {
+  const canPersist = typeof indexedDB !== 'undefined';
+  try {
+    return initializeFirestore(app, {
+      localCache: canPersist
+        ? persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+        : memoryLocalCache(),
+    });
+  } catch {
+    // already initialized for this app (hot reload, or a second call)
+    return getFirestore(app);
+  }
+}
+
 function bundle(label: 'parent' | 'kid'): FirebaseBundle {
   // named apps are what make two live sessions possible: Firebase Auth keys
   // its persisted user by app name, so the parent and the kid do not evict
   // each other
   const app = initializeApp(config, label);
   const auth = getAuth(app);
-  const db = getFirestore(app);
+  const db = firestoreFor(app);
   const fns = getFunctions(app);
   const storage = getStorage(app);
   if (import.meta.env.VITE_USE_EMULATORS) {
