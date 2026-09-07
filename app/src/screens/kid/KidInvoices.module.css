@@ -1,0 +1,15 @@
+.screen { padding: var(--s-4) var(--s-4) calc(var(--tap) + var(--s-6)); }
+.list { list-style: none; margin: 0; padding: 0; }
+.status {
+  margin: 0 0 var(--s-1);
+  font-size: var(--f-small);
+  color: var(--c-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.stub {
+  margin-top: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px dashed var(--c-line);
+  font-size: var(--f-small);
+}

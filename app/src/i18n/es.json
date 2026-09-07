@@ -191,5 +191,24 @@
     "resend": "Enviar otra vez",
     "approved": "¡Aprobada!",
     "celebrate": "¡Bien hecho!"
+  },
+  "kidInvoices": {
+    "title": "Mis facturas",
+    "empty": "Todavía no has enviado ninguna factura.",
+    "statuses": {
+      "draft": "Sin enviar",
+      "sent": "Esperando respuesta",
+      "countered": "Te hicieron otra oferta",
+      "returned": "Te pidieron más detalles",
+      "approved": "Aprobada"
+    },
+    "gross": "Te aprobaron",
+    "net": "Te quedó para gastar",
+    "toSavings": "Se guardó en tu ahorro",
+    "withheld": "Se retuvo",
+    "stats": "Lo que has ganado",
+    "statsApproved": "Aprobado en total",
+    "statsCount": "Facturas aprobadas",
+    "open": "Ver"
   }
 }

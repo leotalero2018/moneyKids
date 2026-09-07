@@ -191,5 +191,24 @@
     "resend": "Send again",
     "approved": "Approved!",
     "celebrate": "Nice work!"
+  },
+  "kidInvoices": {
+    "title": "My invoices",
+    "empty": "You have not sent any invoices yet.",
+    "statuses": {
+      "draft": "Not sent",
+      "sent": "Waiting for an answer",
+      "countered": "They made a different offer",
+      "returned": "They asked for more detail",
+      "approved": "Approved"
+    },
+    "gross": "They approved",
+    "net": "You can spend",
+    "toSavings": "Saved in your savings",
+    "withheld": "Held back",
+    "stats": "What you have earned",
+    "statsApproved": "Approved in total",
+    "statsCount": "Approved invoices",
+    "open": "Open"
   }
 }
