@@ -210,5 +210,10 @@
     "statsApproved": "Aprobado en total",
     "statsCount": "Facturas aprobadas",
     "open": "Ver"
+  },
+  "switcher": {
+    "toKid": "Pasar el teléfono a un niño",
+    "toParent": "Volver con un adulto",
+    "needPin": "Primero crea un PIN de adulto, si no la vista de adulto queda abierta."
   }
 }

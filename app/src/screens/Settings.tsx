@@ -9,7 +9,8 @@ import { useFirebase } from '../firebase/FirebaseContext.js';
 import { Button } from '../components/Button.js';
 import { Card } from '../components/Card.js';
 import { DeductionSettings } from './DeductionSettings.js';
-import { clearPin, hasPin, lockParentView, setPin } from '../lib/pin.js';
+import { clearPin, hasPin, setPin } from '../lib/pin.js';
+import { ProfileSwitcher } from '../components/ProfileSwitcher.js';
 import { ErrorBanner } from '../components/ErrorBanner.js';
 import styles from './Kids.module.css';
 
@@ -84,7 +85,7 @@ export function Settings() {
         </Button>
         {pinSet && (
           <>
-            <Button variant="secondary" onClick={() => lockParentView()}>{t('pin.lock')}</Button>
+            <ProfileSwitcher direction="to-kid" />
             <Button
               variant="danger"
               onClick={() => { clearPin(); setPinSet(false); }}

@@ -210,5 +210,10 @@
     "statsApproved": "Approved in total",
     "statsCount": "Approved invoices",
     "open": "Open"
+  },
+  "switcher": {
+    "toKid": "Hand the phone to a kid",
+    "toParent": "Back to a grown-up",
+    "needPin": "Set an adult PIN first, or the adult view stays open."
   }
 }

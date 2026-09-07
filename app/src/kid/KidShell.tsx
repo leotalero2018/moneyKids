@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { useKidSession } from './KidSessionContext.js';
 import { JoinKid } from '../screens/kid/JoinKid.js';
 import { BottomTabs } from '../components/BottomTabs.js';
+import { ProfileSwitcher } from '../components/ProfileSwitcher.js';
 import { Spinner } from '../components/Spinner.js';
 import { KID_TABS, kidRoutes } from './kidRoutes.js';
 
@@ -28,6 +29,9 @@ export function KidShell() {
             <Route path="*" element={<Navigate to={KID_TABS[0]!.to} replace />} />
           )}
         </Routes>
+        {/* on a shared phone this hands the device back; on a kid-only
+            device it simply lands on the parent sign-in, which is harmless */}
+        <ProfileSwitcher direction="to-parent" />
       </main>
       {KID_TABS.length > 0 && <BottomTabs tabs={KID_TABS.map((tab) => ({ ...tab }))} />}
     </>
