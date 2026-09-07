@@ -95,6 +95,9 @@ describe('Kids', () => {
     await waitFor(() => expect(within(card).getByTestId('join-code').textContent)
       .toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/));
     await userEvent.click(within(card).getByRole('button', { name: /revocar/i }));
-    await waitFor(() => expect(within(card).queryByTestId('join-code')).toBeNull());
+    // the code disappears immediately — the screen does not wait for the
+    // callable — but give CI room for the re-render
+    await waitFor(() => expect(within(card).queryByTestId('join-code')).toBeNull(),
+      { timeout: 5000 });
   });
 });

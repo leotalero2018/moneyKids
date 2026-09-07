@@ -103,6 +103,20 @@ describe('revokeKidAccessCore', () => {
     expect(snap.get('revoked')).toBe(true);
     await expect(mintKidTokenCore(db, adminAuth, { code })).rejects.toThrow(/invalid/i);
   });
+  it('revokes the surviving codes even if one has vanished', async () => {
+    // a batch of updates was atomic: one missing document failed the whole
+    // commit and left every code live, which is the opposite of what a
+    // parent tapping "revoke" is asking for
+    const { code: first } = await createJoinCodeCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1' });
+    const { code: second } = await createJoinCodeCore(db, parentAuth, { familyId: 'fam1', kidId: 'k1' });
+    await db.doc(`joinCodes/${first}`).delete();
+
+    await revokeKidAccessCore(db, adminAuth, parentAuth, { familyId: 'fam1', kidId: 'k1' });
+
+    expect((await db.doc(`joinCodes/${second}`).get()).get('revoked')).toBe(true);
+    await expect(mintKidTokenCore(db, adminAuth, { code: second })).rejects.toThrow(/invalid/i);
+  });
+
   it('rejects non-parent callers', async () => {
     await expect(revokeKidAccessCore(db, adminAuth, kidAuth, { familyId: 'fam1', kidId: 'k1' })).rejects.toThrow();
   });

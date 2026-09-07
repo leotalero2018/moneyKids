@@ -59,20 +59,28 @@ export function KidSessionProvider({ children }: { children: ReactNode }) {
   const [claims, setClaims] = useState<{ familyId: string; kidId: string } | null>(null);
   const [resolved, setResolved] = useState(false);
 
-  useEffect(() => onIdTokenChanged(kidFb.auth, async (user) => {
+  useEffect(() => onIdTokenChanged(kidFb.auth, (user) => {
     if (!user) {
       setClaims(null);
       setResolved(true);
       return;
     }
-    // identity comes from the token, never from the UI
-    const token = await user.getIdTokenResult();
-    const familyId = token.claims.familyId;
-    const kidId = token.claims.kidId;
-    setClaims(
-      typeof familyId === 'string' && typeof kidId === 'string' ? { familyId, kidId } : null,
-    );
-    setResolved(true);
+    // identity comes from the token, never from the UI.
+    // The callback stays SYNCHRONOUS and the promise carries its own catch:
+    // an async listener callback rejects into nothing, which is an unhandled
+    // rejection in production and a torn-down-environment error in tests.
+    void user.getIdTokenResult()
+      .then((token) => {
+        const familyId = token.claims.familyId;
+        const kidId = token.claims.kidId;
+        setClaims(
+          typeof familyId === 'string' && typeof kidId === 'string'
+            ? { familyId, kidId }
+            : null,
+        );
+      })
+      .catch(() => setClaims(null))
+      .finally(() => setResolved(true));
   }), [kidFb.auth]);
 
   // every read below must go through the KID instance

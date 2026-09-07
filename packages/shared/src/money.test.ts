@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeDeductions, validateDeductionRules, minorDigits, formatMinor, parseMajor,
+  SUPPORTED_CURRENCIES,
   type DeductionRule,
 } from './money.js';
 
@@ -102,6 +103,26 @@ describe('minorDigits', () => {
     expect(minorDigits('EUR')).toBe(2);
     expect(minorDigits('JPY')).toBe(0);
   });
+  it('does not depend on the runtime ICU data', () => {
+    // Intl's resolvedOptions().maximumFractionDigits answers 0 for COP on one
+    // Node build and 2 on another, and the same split exists across browsers.
+    // The scale of money cannot be a property of the device: on the wrong
+    // answer, parseMajor('1234','COP') is 123400 — a 100x ledger error.
+    const viaIntl = new Intl.NumberFormat('en', { style: 'currency', currency: 'COP' })
+      .resolvedOptions().maximumFractionDigits;
+    expect(minorDigits('COP')).toBe(0);
+    expect(parseMajor('1234', 'COP')).toBe(1234);
+    if (viaIntl !== 0) {
+      // this runtime disagrees with us — which is exactly the case the table
+      // exists for, so prove we ignored it rather than skipping the check
+      expect(minorDigits('COP')).not.toBe(viaIntl);
+    }
+  });
+
+  it('refuses a currency it has no scale for, rather than assuming 2', () => {
+    expect(() => minorDigits('XYZ')).toThrow(/not supported/);
+  });
+
   it('rejects malformed codes rather than guessing', () => {
     expect(() => minorDigits('')).toThrow(/currency/i);
     expect(() => minorDigits('usd')).toThrow(/currency/i);
@@ -154,5 +175,16 @@ describe('parseMajor', () => {
     expect(() => parseMajor('', 'USD')).toThrow(/amount/i);
     expect(() => parseMajor('abc', 'USD')).toThrow(/amount/i);
     expect(() => parseMajor('1e3', 'USD')).toThrow(/amount/i);
+  });
+});
+
+describe('SUPPORTED_CURRENCIES', () => {
+  it('lists exactly the currencies the math can scale', () => {
+    // the family-creation picker reads this list; a currency it offers but
+    // minorDigits cannot scale would break every amount in that family
+    expect(SUPPORTED_CURRENCIES.length).toBeGreaterThan(0);
+    for (const code of SUPPORTED_CURRENCIES) {
+      expect(() => minorDigits(code)).not.toThrow();
+    }
   });
 });

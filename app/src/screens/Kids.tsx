@@ -62,13 +62,16 @@ export function Kids() {
 
   async function revoke(kidId: string) {
     setError(null);
+    // hide the code FIRST, before the round trip: a code that is being
+    // revoked must not stay on screen inviting someone to type it, and on a
+    // slow connection that window is seconds long
+    setCodes((prev) => {
+      const next = { ...prev };
+      delete next[kidId];
+      return next;
+    });
     try {
       await callables(fb).revokeKidAccess({ familyId: familyId!, kidId });
-      setCodes((prev) => {
-        const next = { ...prev };
-        delete next[kidId];
-        return next;
-      });
     } catch {
       setError(t('common.error'));
     }

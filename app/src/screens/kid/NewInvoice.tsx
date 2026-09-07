@@ -52,12 +52,17 @@ export function NewInvoice() {
   useEffect(() => {
     if (!familyId || !activityId || !family) return;
     let live = true;
-    void getDoc(doc(fb.db, `families/${familyId}/activities/${activityId}`)).then((snap) => {
-      if (!live || !snap.exists()) return;
-      const price = snap.get('suggestedPrice') as number;
-      setPriceText(String(price / 10 ** minorDigits(family.currency)));
-      setCategory(snap.get('category') as Pillar);
-    });
+    void getDoc(doc(fb.db, `families/${familyId}/activities/${activityId}`))
+      .then((snap) => {
+        if (!live || !snap.exists()) return;
+        const price = snap.get('suggestedPrice') as number;
+        setPriceText(String(price / 10 ** minorDigits(family.currency)));
+        setCategory(snap.get('category') as Pillar);
+      })
+      // a prefill is a convenience: if the read fails the kid still gets an
+      // empty form, and an uncaught rejection here would take down nothing
+      // useful while polluting the console
+      .catch(() => undefined);
     return () => { live = false; };
   }, [fb.db, familyId, activityId, family]);
 
