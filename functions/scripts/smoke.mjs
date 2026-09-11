@@ -7,13 +7,11 @@
 // and is never uploaded with the function.
 //
 //   node scripts/smoke.mjs deploy
-import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { EXPECTED_CALLABLES as expected } from './callables.mjs';
 
 const dir = resolve(process.argv[2] ?? 'deploy');
-
-const { callables: expected } = JSON.parse(await readFile(resolve(dir, 'callables.json'), 'utf8'));
 const mod = await import(pathToFileURL(resolve(dir, 'index.js')).href);
 const actual = Object.keys(mod);
 
@@ -21,7 +19,7 @@ const missing = expected.filter((n) => !actual.includes(n));
 const extra = actual.filter((n) => !expected.includes(n));
 if (missing.length || extra.length) {
   throw new Error(
-    'bundle exports do not match callables.json' +
+    'bundle exports do not match the deploy contract' +
       `${missing.length ? `\n  missing: ${missing.join(', ')}` : ''}` +
       `${extra.length ? `\n  unexpected: ${extra.join(', ')}` : ''}`,
   );

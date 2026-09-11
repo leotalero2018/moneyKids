@@ -68,7 +68,6 @@ jobs:
       # names" cannot pass. The env vars stand in for what GCF injects; without
       # them any module-scope Firebase config read would fail confusingly.
       - name: Smoke test that the bundle loads
-        working-directory: functions
         env:
           GCLOUD_PROJECT: money-kids-test
           FIREBASE_CONFIG: '{"projectId":"money-kids-test"}'

@@ -1,0 +1,56 @@
+name: Refresh deploy lockfile
+
+# functions/deploy.lock.json pins 241 transitive packages for the deployed
+# functions. Nothing else updates them: Dependabot bumps the root manifests,
+# but the staged tree is resolved separately, so a CVE under firebase-admin
+# could sit unpatched in production indefinitely while CI stayed green. These
+# callables mint kid auth tokens and are the only path that moves money, so
+# this job refreshes the lock on a schedule and opens a PR when it moves.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays, before the week's work
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.11'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Re-resolve the staged tree
+        run: npm run stage:lock -w @money-kids/functions
+
+      - name: Report known vulnerabilities in the deployed tree
+        working-directory: functions/deploy
+        run: npm audit --omit=dev || true
+
+      - name: Open a PR if the lock moved
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: 'chore: refresh functions deploy lockfile'
+          branch: chore/refresh-deploy-lock
+          delete-branch: true
+          title: 'chore: refresh functions deploy lockfile'
+          body: |
+            Scheduled re-resolve of `functions/deploy.lock.json`, the pinned
+            transitive tree the deployed callables actually run on.
+
+            Nothing else patches this tree — Dependabot updates the root
+            manifests, but the staged lockfile resolves independently. Review
+            the diff as a production dependency change: these functions mint
+            kid auth tokens and are the only path that moves money.
+
+            `npm audit` output for the deployed tree is in the job log.
+          add-paths: functions/deploy.lock.json

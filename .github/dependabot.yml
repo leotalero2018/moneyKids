@@ -1,8 +1,12 @@
-# The staged deploy tree is pinned by functions/deploy.lock.json, so no
-# transitive patch under firebase-admin reaches production until someone runs
-# `npm run stage:lock -w @money-kids/functions`. Dependabot opens the bump;
-# CI's strict staging step then fails until the lock is refreshed, which is
-# the intended forcing function rather than a nuisance.
+# Dependabot updates the root manifests only. The deployed functions run on
+# the separately-resolved tree in functions/deploy.lock.json, which the
+# refresh-deploy-lock workflow keeps patched on a schedule.
+#
+# A firebase* bump here will fail CI's strict staging step until that lock is
+# refreshed, because the lock and the installed tree then disagree. Fix it in
+# the same PR with:
+#
+#   npm run stage:lock -w @money-kids/functions
 version: 2
 updates:
   - package-ecosystem: npm

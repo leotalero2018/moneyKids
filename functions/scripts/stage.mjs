@@ -17,8 +17,9 @@
 //
 //   npm run stage:lock -w @money-kids/functions
 import { build } from 'esbuild';
+import { EXPECTED_CALLABLES } from './callables.mjs';
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { builtinModules } from 'node:module';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +39,10 @@ async function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const repoRoot = resolve(root, '..');
   const outDir = resolve(root, 'deploy');
+// Guards run after esbuild has already written output, so build into a temp
+// directory and promote it only once every check has passed. Otherwise a
+// failed build leaves a bundle with no manifest sitting in deploy/.
+const stageDir = resolve(root, '.deploy-staging');
   const lockSrc = resolve(root, 'deploy.lock.json');
   const refreshLock = process.argv.includes('--refresh-lock');
   // Version drift between the committed lock and the builder's node_modules only
@@ -55,23 +60,6 @@ async function main() {
   // shippable into the functions runtime.
   const SHARED_SRC = resolve(repoRoot, 'packages/shared');
   const FIRST_PARTY = [resolve(root, 'src'), SHARED_SRC];
-
-  // The deploy contract: exactly these callables must exist in the bundle.
-  // Pinned here rather than derived from src/index.ts, because deriving both
-  // sides from the same file means deleting an export shrinks the expected set
-  // too and the check passes — while the callable deploys as a deleted function.
-  // Adding or removing a callable is a deliberate edit to this list.
-  const EXPECTED_CALLABLES = [
-    'acceptCounterOffer',
-    'acceptParentInvite',
-    'approveInvoice',
-    'createJoinCode',
-    'createParentInvite',
-    'mintKidToken',
-    'recordPayout',
-    'revokeKidAccess',
-    'setDeductionRules',
-  ];
 
 
   const pkg = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
@@ -117,12 +105,11 @@ async function main() {
   // Deploying after deleting functions/deploy does work today — firebase-tools
   // runs predeploy before validating functions.source — but that ordering is
   // undocumented, so this is belt-and-braces against it changing.
-  await rm(outDir, { recursive: true, force: true });
+  await rm(stageDir, { recursive: true, force: true });
   // dist/ was the output before staging existed; sweep it so it does not linger
   // stale on machines that built an older revision.
   await rm(resolve(root, 'dist'), { recursive: true, force: true });
-  await mkdir(outDir, { recursive: true });
-  await writeFile(resolve(outDir, '.gitkeep'), '');
+  await mkdir(stageDir, { recursive: true });
 
   const result = await build({
     entryPoints: [resolve(root, 'src/index.ts')],
@@ -131,7 +118,7 @@ async function main() {
     platform: 'node',
     target: 'node20',
     format: 'esm',
-    outfile: resolve(outDir, 'index.js'),
+    outfile: resolve(stageDir, 'index.js'),
     external: EXTERNALS,
     // Pin the workspace package to its path rather than letting node resolution
     // walk up to the root node_modules symlink. Guard 1 below would catch a
@@ -242,11 +229,11 @@ async function main() {
     fail(
       `callables missing from the bundle: ${missingCallables.join(', ')}\n` +
         'Each would deploy as a deleted function. If this is intentional, remove it from ' +
-        'EXPECTED_CALLABLES in this script.',
+        'EXPECTED_CALLABLES in scripts/callables.mjs.',
     );
   }
   if (unexpected.length > 0) {
-    fail(`bundle exports callables not in the deploy contract: ${unexpected.join(', ')} — add them to EXPECTED_CALLABLES`);
+    fail(`bundle exports callables not in the deploy contract: ${unexpected.join(', ')} — add them to EXPECTED_CALLABLES in scripts/callables.mjs`);
   }
 
   // 5. Every external must be declared, so the generated manifest carries a real
@@ -313,17 +300,17 @@ async function main() {
     engines: pkg.engines,
     dependencies: pinned,
   };
-  await writeFile(resolve(outDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFile(resolve(stageDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 
   // Pinning the two externals only fixes the top level; without a lockfile the
   // transitive tree floats, so two deploys of the same commit could ship
   // different code underneath firebase-admin.
   if (refreshLock) {
     await execFileAsync('npm', ['install', '--package-lock-only', '--omit=dev', '--workspaces=false'], {
-      cwd: outDir,
+      cwd: stageDir,
       shell: process.platform === 'win32', // npm is npm.cmd there
     });
-    await copyFile(resolve(outDir, 'package-lock.json'), lockSrc);
+    await copyFile(resolve(stageDir, 'package-lock.json'), lockSrc);
     console.log(`refreshed ${relative(repoRoot, lockSrc)} — commit it`);
   } else {
     // The manifest and the lock ship together and Cloud Build runs npm ci
@@ -342,15 +329,15 @@ async function main() {
           'npm ci would fail inside Cloud Build.\nRefresh: npm run stage:lock -w @money-kids/functions',
       );
     }
-    await copyFile(lockSrc, resolve(outDir, 'package-lock.json'));
+    await copyFile(lockSrc, resolve(stageDir, 'package-lock.json'));
   }
 
-  // (c) the smoke test compares against this rather than a magic number, so
-  // "right count, wrong names" cannot pass.
-  await writeFile(
-    resolve(outDir, 'callables.json'),
-    `${JSON.stringify({ callables: EXPECTED_CALLABLES }, null, 2)}\n`,
-  );
+
+  // Everything passed: swap the staged directory into place atomically enough
+  // that deploy/ never holds a half-built artifact.
+  await rm(outDir, { recursive: true, force: true });
+  await rename(stageDir, outDir);
+  await writeFile(resolve(outDir, '.gitkeep'), '');
 
   console.log(
     `staged ${outDir} — self-contained, first-party only, ${EXPECTED_CALLABLES.length} callables, pinned to ` +
@@ -361,7 +348,12 @@ async function main() {
 
 }
 
-main().catch((e) => {
+main().catch(async (e) => {
+  // Never leave a partial staging directory behind for a later step to find.
+  await rm(resolve(dirname(fileURLToPath(import.meta.url)), '..', '.deploy-staging'), {
+    recursive: true,
+    force: true,
+  }).catch(() => {});
   console.error(e instanceof StagingError ? `Error: ${e.message}` : e);
   process.exit(1);
 });
