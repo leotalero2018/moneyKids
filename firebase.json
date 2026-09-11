@@ -24,9 +24,16 @@
     }
   },
   "functions": {
-    "source": "functions",
+    "source": "functions/deploy",
     "predeploy": [
-      "npm run build -w @money-kids/functions"
+      "npm run build:deploy -w @money-kids/functions"
+    ],
+    "ignore": [
+      "**/node_modules/**",
+      ".git",
+      "firebase-debug.log",
+      "firebase-debug.*.log",
+      ".gitkeep"
     ]
   },
   "hosting": {

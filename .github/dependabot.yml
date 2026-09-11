@@ -1,0 +1,18 @@
+# Dependabot updates the root manifests only. The deployed functions run on
+# the separately-resolved tree in functions/deploy.lock.json, which the
+# refresh-deploy-lock workflow keeps patched on a schedule.
+#
+# A firebase* bump here will fail CI's strict staging step until that lock is
+# refreshed, because the lock and the installed tree then disagree. Fix it in
+# the same PR with:
+#
+#   npm run stage:lock -w @money-kids/functions
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      firebase:
+        patterns: ['firebase*', '@firebase/*']

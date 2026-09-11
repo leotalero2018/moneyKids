@@ -1,0 +1,120 @@
+name: Refresh deploy lockfile
+
+# functions/deploy.lock.json pins 241 transitive packages for the deployed
+# functions. Nothing else updates them: Dependabot bumps the root manifests,
+# but the staged tree is resolved separately, so a CVE under firebase-admin
+# could sit unpatched in production indefinitely while CI stayed green. These
+# callables mint kid auth tokens and are the only path that moves money, so
+# this job refreshes the lock on a schedule and opens a PR when it moves.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays, before the week's work
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: >-
+          Existing branch to refresh in place — use this on a Dependabot
+          firebase* PR, which lands red until the staged lock is regenerated.
+          Leave empty for the scheduled run, which opens its own PR.
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.branch || github.ref }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20.11'
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: Re-resolve the staged tree
+        run: npm run stage:lock -w @money-kids/functions
+
+      # create-pull-request with the default GITHUB_TOKEN does not trigger
+      # on: pull_request, so the one PR that changes the deployed dependency
+      # tree would otherwise arrive with no CI at all. Run the deploy-critical
+      # checks here instead, before opening it.
+      - name: Validate the refreshed tree
+        run: |
+          npm run build:deploy -w @money-kids/functions
+          npm run test:staging
+
+      # --ignore-scripts: this job exists to pull in unreviewed dependency
+      # versions, and it holds a token with push and PR rights. Running install
+      # scripts from the tree it just re-resolved would hand that token to any
+      # compromised transitive release (protobufjs already declares one). The
+      # point here is validating the lock/manifest pair, which needs no scripts.
+      - name: Install the refreshed tree exactly as Cloud Build will
+        working-directory: functions/deploy
+        run: npm ci --omit=dev --workspaces=false --ignore-scripts
+
+      # Dispatched against an existing branch: push the refreshed lock straight
+      # to it, so a Dependabot firebase* PR can go green without a human
+      # running stage:lock locally.
+      - name: Push the refreshed lock to the target branch
+        if: inputs.branch != ''
+        # Passed through env, never interpolated into the script: this job
+        # holds a token with push and PR rights.
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          if git diff --quiet -- functions/deploy.lock.json; then
+            echo "lock unchanged; nothing to push"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add functions/deploy.lock.json
+          git commit -m "chore: refresh functions deploy lockfile"
+          git push origin HEAD:"$BRANCH"
+
+      - name: Open a PR if the lock moved
+        if: inputs.branch == ''
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6
+        with:
+          commit-message: 'chore: refresh functions deploy lockfile'
+          branch: chore/refresh-deploy-lock
+          delete-branch: true
+          title: 'chore: refresh functions deploy lockfile'
+          body: |
+            Scheduled re-resolve of `functions/deploy.lock.json`, the pinned
+            transitive tree the deployed callables actually run on.
+
+            Nothing else patches this tree — Dependabot updates the root
+            manifests, but the staged lockfile resolves independently. Review
+            the diff as a production dependency change: these functions mint
+            kid auth tokens and are the only path that moves money.
+
+            Validated before this PR was opened: strict staging, the staging
+            guard tests, and `npm ci` against the refreshed lock. That matters
+            because `create-pull-request` cannot trigger `on: pull_request`
+            with the default token, so this branch gets no CI of its own.
+
+            `npm audit` output for the deployed tree is in the job log. The job
+            fails on a high or critical finding, so if it is green the worst
+            outstanding issues are moderate.
+          # stage:lock also rewrites functions/deploy/, which .gitignore
+          # excludes; add-paths makes that explicit rather than relying on it
+          add-paths: functions/deploy.lock.json
+
+      # Runs AFTER the PR is opened: a high or critical finding is exactly when
+      # the refreshed lock matters most, so failing first would discard it.
+      # Moderate findings are reported but tolerated — issue #5 tracks the
+      # current ones, which need a firebase-admin major bump to clear.
+      - name: Audit the deployed tree
+        working-directory: functions/deploy
+        run: |
+          npm audit --omit=dev || true
+          npm audit --omit=dev --audit-level=high
