@@ -45,17 +45,28 @@ jobs:
       - name: App component tests
         run: npm run test:app
 
-      # The lock/manifest pair is exactly what failed the first deploy, and
-      # npm ci is the only thing that actually validates it.
-      - name: Validate the staged functions manifest installs
-        run: |
-          npm run build -w @money-kids/functions
-          npm ci --prefix functions/deploy --omit=dev
+      - name: Build the app
+        run: npm run build:app
 
-      - name: Build app and functions
-        run: |
-          npm run build:app
-          npm run build -w @money-kids/functions
+      # build:deploy is the strict variant the predeploy hook uses, so lock
+      # drift fails CI instead of warning. Without it, CI could stay green
+      # while prod deployed a different firebase-admin than CI tested against.
+      - name: Stage the functions bundle (strict)
+        run: npm run build:deploy -w @money-kids/functions
+
+      # The lock/manifest pair is exactly what failed the first deploy, and
+      # npm ci is the only thing that really validates it. --workspaces=false
+      # stops npm resolving workspace context from the repo root.
+      - name: Validate the staged manifest installs
+        working-directory: functions/deploy
+        run: npm ci --omit=dev --workspaces=false
+
+      # Neither the metafile nor the import guards see a dynamic require from
+      # inlined code, and the banner injects createRequire. Importing the
+      # bundle is what actually catches a cold-start crash.
+      - name: Smoke test that the bundle loads
+        working-directory: functions/deploy
+        run: node -e "import('./index.js').then(m => { const n = Object.keys(m).length; if (n !== 9) { throw new Error('expected 9 callables, got ' + n); } console.log('bundle loaded,', n, 'callables'); })"
 
   e2e:
     runs-on: ubuntu-latest

@@ -47,9 +47,33 @@ const EXTERNALS = ['firebase-admin', 'firebase-functions'];
 const SHARED_SRC = resolve(repoRoot, 'packages/shared');
 const FIRST_PARTY = [resolve(root, 'src'), SHARED_SRC];
 
+// The deploy contract: exactly these callables must exist in the bundle.
+// Pinned here rather than derived from src/index.ts, because deriving both
+// sides from the same file means deleting an export shrinks the expected set
+// too and the check passes — while the callable deploys as a deleted function.
+// Adding or removing a callable is a deliberate edit to this list.
+const EXPECTED_CALLABLES = [
+  'acceptCounterOffer',
+  'acceptParentInvite',
+  'approveInvoice',
+  'createJoinCode',
+  'createParentInvite',
+  'mintKidToken',
+  'recordPayout',
+  'revokeKidAccess',
+  'setDeductionRules',
+];
+
+class StagingError extends Error {}
+// Guard violations are diagnostics for a human, not crashes — print the
+// message alone rather than a Node stack trace through this script.
 const fail = (msg) => {
-  throw new Error(msg);
+  throw new StagingError(msg);
 };
+process.on('uncaughtException', (e) => {
+  console.error(e instanceof StagingError ? `Error: ${e.message}` : e);
+  process.exit(1);
+});
 
 const pkg = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 
@@ -78,10 +102,24 @@ async function installedVersion(dep) {
   return fail(`cannot resolve an installed version for ${dep} — run npm install`);
 }
 
+// NOTE: the staged directory ships a manifest with no node_modules, so when
+// the emulator loads this bundle, `firebase-admin` and `firebase-functions`
+// resolve by walking up to the repo-root node_modules. That works because npm
+// hoists them, but it means the emulator uses different resolution than the
+// deployed function, which installs from the staged manifest. If a version
+// conflict ever de-hoists them, emulator startup breaks here first.
+//
 // Stale files in an existing deploy/ would be uploaded alongside the fresh
 // ones, so never build on top of a previous run.
+// .gitkeep is committed so the staged directory exists in a fresh clone; the
+// deploy relies on firebase-tools running predeploy before it validates
+// functions.source, and this removes that dependency.
 await rm(outDir, { recursive: true, force: true });
+// dist/ was the output before staging existed; sweep it so it does not linger
+// stale on machines that built an older revision.
+await rm(resolve(root, 'dist'), { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
+await writeFile(resolve(outDir, '.gitkeep'), '');
 
 const result = await build({
   entryPoints: [resolve(root, 'src/index.ts')],
@@ -92,6 +130,11 @@ const result = await build({
   format: 'esm',
   outfile: resolve(outDir, 'index.js'),
   external: EXTERNALS,
+  // Pin the workspace package to its path rather than letting node resolution
+  // walk up to the root node_modules symlink. Guard 1 below would catch a
+  // registry package winning that lookup, but pinning removes the possibility
+  // rather than detecting it after the fact.
+  alias: { '@money-kids/shared': resolve(SHARED_SRC, 'src/index.ts') },
   sourcemap: true,
   metafile: true,
   banner: {
@@ -145,8 +188,10 @@ const escaped = Object.entries(result.metafile.outputs)
   // `imports` key varies by esbuild version, and this is the guard that must
   // not crash on itself
   .filter(([file]) => file.endsWith('.js'))
-  .flatMap(([, o]) => (o.imports ?? []).map((i) => i.path))
-  .filter((p) => !p.startsWith('./') && !p.startsWith('../') && !allowedSpecifiers.has(packageOf(p)));
+  // `external: true` is esbuild's own marker for an import it left unresolved,
+  // which is more direct and version-stable than inspecting the specifier shape
+  .flatMap(([, o]) => (o.imports ?? []).filter((i) => i.external).map((i) => i.path))
+  .filter((p) => !allowedSpecifiers.has(packageOf(p)));
 if (escaped.length > 0) {
   fail(
     `bundle is not self-contained: ${[...new Set(escaped)].join(', ')}\n` +
@@ -173,20 +218,27 @@ if (sharedBytes === 0) {
   );
 }
 
-// 4. Every callable declared in src/index.ts must survive into the bundle's
-// export surface. A callable that silently stops being exported deploys as a
-// deleted function, which is the failure mode that actually reaches families.
-const declared = [...(await readFile(resolve(root, 'src/index.ts'), 'utf8')).matchAll(/^export const (\w+)/gm)].map(
-  (m) => m[1],
-);
+// 4. The bundle's export surface must match the deploy contract exactly. A
+// callable that stops being exported deploys as a deleted function, which is
+// the failure mode that actually reaches families; an unexpected export means
+// the contract and the code have diverged.
 const exported = new Set(
   Object.entries(result.metafile.outputs)
     .filter(([file]) => file.endsWith('.js'))
     .flatMap(([, o]) => o.exports ?? []),
 );
-const missing = declared.filter((name) => !exported.has(name));
-if (declared.length === 0) fail('found no `export const` callables in src/index.ts — the export scan is broken');
-if (missing.length > 0) fail(`callables declared in src/index.ts but missing from the bundle: ${missing.join(', ')}`);
+const missingCallables = EXPECTED_CALLABLES.filter((name) => !exported.has(name));
+const unexpected = [...exported].filter((name) => !EXPECTED_CALLABLES.includes(name));
+if (missingCallables.length > 0) {
+  fail(
+    `callables missing from the bundle: ${missingCallables.join(', ')}\n` +
+      'Each would deploy as a deleted function. If this is intentional, remove it from ' +
+      'EXPECTED_CALLABLES in this script.',
+  );
+}
+if (unexpected.length > 0) {
+  fail(`bundle exports callables not in the deploy contract: ${unexpected.join(', ')} — add them to EXPECTED_CALLABLES`);
+}
 
 // 5. Every external must be declared, so the generated manifest carries a real
 // version. The reverse is only a warning: a dependency that is not an external
@@ -269,7 +321,7 @@ if (refreshLock) {
 }
 
 console.log(
-  `staged ${outDir} — self-contained, first-party only, ${declared.length} callables, pinned to ` +
+  `staged ${outDir} — self-contained, first-party only, ${EXPECTED_CALLABLES.length} callables, pinned to ` +
     Object.entries(pinned)
       .map(([d, v]) => `${d}@${v}`)
       .join(', '),

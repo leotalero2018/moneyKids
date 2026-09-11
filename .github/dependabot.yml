@@ -1,0 +1,14 @@
+# The staged deploy tree is pinned by functions/deploy.lock.json, so no
+# transitive patch under firebase-admin reaches production until someone runs
+# `npm run stage:lock -w @money-kids/functions`. Dependabot opens the bump;
+# CI's strict staging step then fails until the lock is refreshed, which is
+# the intended forcing function rather than a nuisance.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      firebase:
+        patterns: ['firebase*', '@firebase/*']
