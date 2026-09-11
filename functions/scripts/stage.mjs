@@ -26,303 +26,342 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = resolve(root, '..');
-const outDir = resolve(root, 'deploy');
-const lockSrc = resolve(root, 'deploy.lock.json');
-const refreshLock = process.argv.includes('--refresh-lock');
-// Version drift between the committed lock and the builder's node_modules only
-// matters when we are about to deploy. Under --strict (the predeploy hook) it
-// fails the build; otherwise it warns, so a routine `npm install` cannot break
-// the emulator and test loops.
-const strict = process.argv.includes('--strict');
-
-// Anything NOT listed here must be inlined into the bundle. Adding an entry
-// means Cloud Build has to install it, so it must be published on npm.
-const EXTERNALS = ['firebase-admin', 'firebase-functions'];
-
-// Only these trees may contribute code to the bundle. Listed package by
-// package so that adding a workspace package does not silently make it
-// shippable into the functions runtime.
-const SHARED_SRC = resolve(repoRoot, 'packages/shared');
-const FIRST_PARTY = [resolve(root, 'src'), SHARED_SRC];
-
-// The deploy contract: exactly these callables must exist in the bundle.
-// Pinned here rather than derived from src/index.ts, because deriving both
-// sides from the same file means deleting an export shrinks the expected set
-// too and the check passes — while the callable deploys as a deleted function.
-// Adding or removing a callable is a deliberate edit to this list.
-const EXPECTED_CALLABLES = [
-  'acceptCounterOffer',
-  'acceptParentInvite',
-  'approveInvoice',
-  'createJoinCode',
-  'createParentInvite',
-  'mintKidToken',
-  'recordPayout',
-  'revokeKidAccess',
-  'setDeductionRules',
-];
-
+// Guard violations are diagnostics for a human, not crashes — main() prints
+// the message alone rather than a Node stack trace through this script. Both
+// live at module scope so the catch below can actually see StagingError.
 class StagingError extends Error {}
-// Guard violations are diagnostics for a human, not crashes — print the
-// message alone rather than a Node stack trace through this script.
 const fail = (msg) => {
   throw new StagingError(msg);
 };
-process.on('uncaughtException', (e) => {
+
+async function main() {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const repoRoot = resolve(root, '..');
+  const outDir = resolve(root, 'deploy');
+  const lockSrc = resolve(root, 'deploy.lock.json');
+  const refreshLock = process.argv.includes('--refresh-lock');
+  // Version drift between the committed lock and the builder's node_modules only
+  // matters when we are about to deploy. Under --strict (the predeploy hook) it
+  // fails the build; otherwise it warns, so a routine `npm install` cannot break
+  // the emulator and test loops.
+  const strict = process.argv.includes('--strict');
+
+  // Anything NOT listed here must be inlined into the bundle. Adding an entry
+  // means Cloud Build has to install it, so it must be published on npm.
+  const EXTERNALS = ['firebase-admin', 'firebase-functions'];
+
+  // Only these trees may contribute code to the bundle. Listed package by
+  // package so that adding a workspace package does not silently make it
+  // shippable into the functions runtime.
+  const SHARED_SRC = resolve(repoRoot, 'packages/shared');
+  const FIRST_PARTY = [resolve(root, 'src'), SHARED_SRC];
+
+  // The deploy contract: exactly these callables must exist in the bundle.
+  // Pinned here rather than derived from src/index.ts, because deriving both
+  // sides from the same file means deleting an export shrinks the expected set
+  // too and the check passes — while the callable deploys as a deleted function.
+  // Adding or removing a callable is a deliberate edit to this list.
+  const EXPECTED_CALLABLES = [
+    'acceptCounterOffer',
+    'acceptParentInvite',
+    'approveInvoice',
+    'createJoinCode',
+    'createParentInvite',
+    'mintKidToken',
+    'recordPayout',
+    'revokeKidAccess',
+    'setDeductionRules',
+  ];
+
+
+  const pkg = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
+
+  // True when `abs` is inside `dir`. Uses relative() rather than a '/' prefix
+  // so this holds on Windows, where resolve() yields backslashes.
+  const isInside = (dir, abs) => {
+    const rel = relative(dir, abs);
+    return rel !== '' && !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`);
+  };
+
+  // Reads the installed manifest off disk rather than require()-ing it: packages
+  // with an `exports` map (firebase-admin among them) do not expose
+  // ./package.json. npm hoists workspace deps to the repo root, but check the
+  // package-local tree first in case a version conflict forced a nested copy.
+  // NOTE: this pins to whatever is in the *builder's* node_modules, which the
+  // root lockfile governs only if the builder ran `npm ci`. It probes only these
+  // two trees, so a copy de-hoisted somewhere else by a version conflict would
+  // be missed — that silently weakens the drift warning below, but the lock, not
+  // this reading, is what actually determines the deployed version.
+  async function installedVersion(dep) {
+    for (const base of [resolve(root, 'node_modules'), resolve(repoRoot, 'node_modules')]) {
+      try {
+        const { version } = JSON.parse(await readFile(resolve(base, dep, 'package.json'), 'utf8'));
+        if (version) return version;
+      } catch {
+        // not installed in this tree; try the next one
+      }
+    }
+    return fail(`cannot resolve an installed version for ${dep} — run npm install`);
+  }
+
+  // NOTE: the staged directory ships a manifest with no node_modules, so when
+  // the emulator loads this bundle, `firebase-admin` and `firebase-functions`
+  // resolve by walking up to the repo-root node_modules. That works because npm
+  // hoists them, but it means the emulator uses different resolution than the
+  // deployed function, which installs from the staged manifest. If a version
+  // conflict ever de-hoists them, emulator startup breaks here first.
+  //
+  // Stale files in an existing deploy/ would be uploaded alongside the fresh
+  // ones, so never build on top of a previous run.
+  // .gitkeep is committed so the staged directory exists in a fresh clone.
+  // Deploying after deleting functions/deploy does work today — firebase-tools
+  // runs predeploy before validating functions.source — but that ordering is
+  // undocumented, so this is belt-and-braces against it changing.
+  await rm(outDir, { recursive: true, force: true });
+  // dist/ was the output before staging existed; sweep it so it does not linger
+  // stale on machines that built an older revision.
+  await rm(resolve(root, 'dist'), { recursive: true, force: true });
+  await mkdir(outDir, { recursive: true });
+  await writeFile(resolve(outDir, '.gitkeep'), '');
+
+  const result = await build({
+    entryPoints: [resolve(root, 'src/index.ts')],
+    absWorkingDir: root, // makes metafile paths deterministic regardless of cwd
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'esm',
+    outfile: resolve(outDir, 'index.js'),
+    external: EXTERNALS,
+    // Pin the workspace package to its path rather than letting node resolution
+    // walk up to the root node_modules symlink. Guard 1 below would catch a
+    // registry package winning that lookup, but pinning removes the possibility
+    // rather than detecting it after the fact.
+    //
+    // This is the same file every other consumer resolves: packages/shared has
+    // `main: "src/index.ts"`, no `exports` map and no build step, so typecheck
+    // and vitest read exactly what gets bundled here. If shared ever gains a
+    // dist/ build, this alias must follow it or CI would be testing different
+    // money helpers than the ones deployed.
+    alias: { '@money-kids/shared': resolve(SHARED_SRC, 'src/index.ts') },
+    sourcemap: true,
+    metafile: true,
+    banner: {
+      // The Node 20 GCF runtime does not enable source maps by default, so the
+      // emitted .map would be dead weight without this — a stack trace from a
+      // money callable would point at generated code. This costs a little cold
+      // start on every instance; accepted deliberately, because an unreadable
+      // stack trace from a ledger write costs more.
+      js:
+        "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" +
+        '\nprocess.setSourceMapsEnabled(true);',
+    },
+  });
+
+  const inputs = Object.keys(result.metafile.inputs).map((f) => resolve(root, f));
+
+  // 1. Every bundled input must come from first-party source. `shared` carries
+  // the minor-unit money helpers and resolves through the workspace symlink in
+  // the ROOT node_modules — nothing in functions/ pins that resolution. If a
+  // same-named package from a registry ever won, the bundle would still be
+  // self-contained and the build would stay green while inlining the wrong
+  // money code. Rejecting node_modules explicitly first: the positive check
+  // alone would accept packages/shared/node_modules/**, which is a nested
+  // dependency, not first-party source. Under --preserve-symlinks the shared
+  // inputs resolve inside node_modules and this fails the build — noisy, but it
+  // fails closed.
+  const nested = inputs.filter((abs) => abs.split(sep).includes('node_modules'));
+  const outside = inputs.filter((abs) => !FIRST_PARTY.some((dir) => isInside(dir, abs)));
+  const foreign = [...new Set([...nested, ...outside])];
+  if (foreign.length > 0) {
+    const allowed = FIRST_PARTY.map((d) => relative(repoRoot, d)).join(' or ');
+    fail(
+      `bundle inlines code from outside first-party source: ${foreign.slice(0, 5).join(', ')}` +
+        `${foreign.length > 5 ? ` (+${foreign.length - 5} more)` : ''}\n` +
+        `Every bundled input must live in ${allowed}, and never under node_modules.\n` +
+        'If packages/shared gained a runtime dependency, add it to EXTERNALS and to ' +
+        'functions/package.json so Cloud Build installs it. Otherwise @money-kids/shared ' +
+        'has stopped resolving to the local workspace package.',
+    );
+  }
+
+  // 2. Nothing may escape the bundle except a declared external or a node
+  // builtin — anything else is a module Cloud Build cannot install, which would
+  // surface as a cold-start crash instead of a build failure.
+  const allowedSpecifiers = new Set([...EXTERNALS, ...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);
+  // `firebase-admin/firestore` belongs to `firebase-admin`, so compare the
+  // package name (scoped names keep two segments: `@scope/name`).
+  const packageOf = (spec) => spec.split('/').slice(0, spec.startsWith('@') ? 2 : 1).join('/');
+  const escaped = Object.entries(result.metafile.outputs)
+    // only the JS output can carry imports; whether the .map entry even has an
+    // `imports` key varies by esbuild version, and this is the guard that must
+    // not crash on itself
+    .filter(([file]) => file.endsWith('.js'))
+    // `external: true` is esbuild's own marker for an import it left unresolved,
+    // which is more direct and version-stable than inspecting the specifier shape
+    .flatMap(([, o]) => (o.imports ?? []).filter((i) => i.external).map((i) => i.path))
+    .filter((p) => !allowedSpecifiers.has(packageOf(p)));
+  if (escaped.length > 0) {
+    fail(
+      `bundle is not self-contained: ${[...new Set(escaped)].join(', ')}\n` +
+        'Either inline it (remove from EXTERNALS) or, if it is published on npm, ' +
+        'add it to EXTERNALS and to functions/package.json dependencies.',
+    );
+  }
+
+  // 3. The shared money code must actually end up in the output. esbuild lists
+  // an input it merely parsed, so checking that the file appears would pass even
+  // if every export were tree-shaken away; bytesInOutput is what actually
+  // shipped. Asserted from the metafile rather than by grepping for an
+  // identifier, which would not survive renaming and would fail misleadingly on
+  // an unrelated rename in shared.
+  const sharedBytes = Object.entries(result.metafile.outputs)
+    .filter(([file]) => file.endsWith('.js'))
+    .flatMap(([, o]) => Object.entries(o.inputs ?? {}))
+    .filter(([file]) => isInside(SHARED_SRC, resolve(root, file)))
+    .reduce((total, [, info]) => total + (info.bytesInOutput ?? 0), 0);
+  if (sharedBytes === 0) {
+    fail(
+      'no code from packages/shared survived into the bundle — @money-kids/shared ' +
+        'resolved to a stub, or every money helper was tree-shaken away',
+    );
+  }
+
+  // 4. The bundle's export surface must match the deploy contract exactly. A
+  // callable that stops being exported deploys as a deleted function, which is
+  // the failure mode that actually reaches families; an unexpected export means
+  // the contract and the code have diverged.
+  const exported = new Set(
+    Object.entries(result.metafile.outputs)
+      .filter(([file]) => file.endsWith('.js'))
+      .flatMap(([, o]) => o.exports ?? []),
+  );
+  const missingCallables = EXPECTED_CALLABLES.filter((name) => !exported.has(name));
+  const unexpected = [...exported].filter((name) => !EXPECTED_CALLABLES.includes(name));
+  if (missingCallables.length > 0) {
+    fail(
+      `callables missing from the bundle: ${missingCallables.join(', ')}\n` +
+        'Each would deploy as a deleted function. If this is intentional, remove it from ' +
+        'EXPECTED_CALLABLES in this script.',
+    );
+  }
+  if (unexpected.length > 0) {
+    fail(`bundle exports callables not in the deploy contract: ${unexpected.join(', ')} — add them to EXPECTED_CALLABLES`);
+  }
+
+  // 5. Every external must be declared, so the generated manifest carries a real
+  // version. The reverse is only a warning: a dependency that is not an external
+  // gets inlined, which is usually what we want but breaks for native modules
+  // and dynamic requires.
+  for (const dep of EXTERNALS) {
+    if (!pkg.dependencies?.[dep]) fail(`external missing from functions/package.json dependencies: ${dep}`);
+  }
+  const inlined = Object.keys(pkg.dependencies ?? {}).filter(
+    (dep) => !EXTERNALS.includes(dep) && dep !== '@money-kids/shared',
+  );
+  if (inlined.length > 0) {
+    console.warn(
+      `warning: ${inlined.join(', ')} will be inlined into the bundle. That is fine for pure JS, ` +
+        'but native modules and dynamic requires must be added to EXTERNALS instead.',
+    );
+  }
+
+  if (!pkg.engines?.node) fail('functions/package.json has no engines.node — GCF would silently pick a default runtime');
+
+  // The committed lock is the source of truth for what gets deployed: it is
+  // fixed by the commit, whereas the builder's node_modules is whatever that
+  // machine last installed. Pinning the manifest from the lock is what makes
+  // "reproducible from the commit" actually true.
+  let lock = null;
+  if (!refreshLock) {
+    try {
+      lock = JSON.parse(await readFile(lockSrc, 'utf8'));
+    } catch {
+      fail(`missing ${relative(repoRoot, lockSrc)} — run: npm run stage:lock -w @money-kids/functions`);
+    }
+  }
+
+  const pinned = Object.fromEntries(
+    await Promise.all(
+      EXTERNALS.map(async (dep) => {
+        const installed = await installedVersion(dep);
+        if (refreshLock) return [dep, installed];
+        const locked = lock.packages?.[`node_modules/${dep}`]?.version;
+        if (!locked) {
+          fail(
+            `${relative(repoRoot, lockSrc)} has no entry for ${dep} — ` +
+              'run: npm run stage:lock -w @money-kids/functions',
+          );
+        }
+        if (locked !== installed) {
+          const msg =
+            `${dep}: lock has ${locked}, node_modules has ${installed}. The deploy uses ${locked}.\n` +
+            'Refresh with: npm run stage:lock -w @money-kids/functions';
+          if (strict) fail(`refusing to deploy with a stale lock — ${msg}`);
+          console.warn(`warning: ${msg}`);
+        }
+        return [dep, locked];
+      }),
+    ),
+  );
+
+  const manifest = {
+    name: pkg.name,
+    private: true,
+    type: 'module',
+    main: 'index.js',
+    engines: pkg.engines,
+    dependencies: pinned,
+  };
+  await writeFile(resolve(outDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+  // Pinning the two externals only fixes the top level; without a lockfile the
+  // transitive tree floats, so two deploys of the same commit could ship
+  // different code underneath firebase-admin.
+  if (refreshLock) {
+    await execFileAsync('npm', ['install', '--package-lock-only', '--omit=dev', '--workspaces=false'], {
+      cwd: outDir,
+      shell: process.platform === 'win32', // npm is npm.cmd there
+    });
+    await copyFile(resolve(outDir, 'package-lock.json'), lockSrc);
+    console.log(`refreshed ${relative(repoRoot, lockSrc)} — commit it`);
+  } else {
+    // The manifest and the lock ship together and Cloud Build runs npm ci
+    // against the pair, which fails outright if they disagree. The added-dep
+    // direction is caught above ("lock has no entry for X"); this catches the
+    // removed-dep direction, where EXTERNALS shrinks and the lock still lists
+    // the old root dependency set.
+    const lockRoot = lock.packages?.['']?.dependencies ?? {};
+    const sameKeys =
+      Object.keys(lockRoot).length === Object.keys(pinned).length &&
+      Object.keys(pinned).every((dep) => lockRoot[dep] !== undefined);
+    if (!sameKeys) {
+      fail(
+        `${relative(repoRoot, lockSrc)} root dependencies [${Object.keys(lockRoot).join(', ') || 'none'}] ` +
+          `do not match the staged manifest [${Object.keys(pinned).join(', ')}]. ` +
+          'npm ci would fail inside Cloud Build.\nRefresh: npm run stage:lock -w @money-kids/functions',
+      );
+    }
+    await copyFile(lockSrc, resolve(outDir, 'package-lock.json'));
+  }
+
+  // (c) the smoke test compares against this rather than a magic number, so
+  // "right count, wrong names" cannot pass.
+  await writeFile(
+    resolve(outDir, 'callables.json'),
+    `${JSON.stringify({ callables: EXPECTED_CALLABLES }, null, 2)}\n`,
+  );
+
+  console.log(
+    `staged ${outDir} — self-contained, first-party only, ${EXPECTED_CALLABLES.length} callables, pinned to ` +
+      Object.entries(pinned)
+        .map(([d, v]) => `${d}@${v}`)
+        .join(', '),
+  );
+
+}
+
+main().catch((e) => {
   console.error(e instanceof StagingError ? `Error: ${e.message}` : e);
   process.exit(1);
 });
-
-const pkg = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
-
-// True when `abs` is inside `dir`. Uses relative() rather than a '/' prefix
-// so this holds on Windows, where resolve() yields backslashes.
-const isInside = (dir, abs) => {
-  const rel = relative(dir, abs);
-  return rel !== '' && !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`);
-};
-
-// Reads the installed manifest off disk rather than require()-ing it: packages
-// with an `exports` map (firebase-admin among them) do not expose
-// ./package.json. npm hoists workspace deps to the repo root, but check the
-// package-local tree first in case a version conflict forced a nested copy.
-// NOTE: this pins to whatever is in the *builder's* node_modules, which the
-// root lockfile governs only if the builder ran `npm ci`.
-async function installedVersion(dep) {
-  for (const base of [resolve(root, 'node_modules'), resolve(repoRoot, 'node_modules')]) {
-    try {
-      const { version } = JSON.parse(await readFile(resolve(base, dep, 'package.json'), 'utf8'));
-      if (version) return version;
-    } catch {
-      // not installed in this tree; try the next one
-    }
-  }
-  return fail(`cannot resolve an installed version for ${dep} — run npm install`);
-}
-
-// NOTE: the staged directory ships a manifest with no node_modules, so when
-// the emulator loads this bundle, `firebase-admin` and `firebase-functions`
-// resolve by walking up to the repo-root node_modules. That works because npm
-// hoists them, but it means the emulator uses different resolution than the
-// deployed function, which installs from the staged manifest. If a version
-// conflict ever de-hoists them, emulator startup breaks here first.
-//
-// Stale files in an existing deploy/ would be uploaded alongside the fresh
-// ones, so never build on top of a previous run.
-// .gitkeep is committed so the staged directory exists in a fresh clone; the
-// deploy relies on firebase-tools running predeploy before it validates
-// functions.source, and this removes that dependency.
-await rm(outDir, { recursive: true, force: true });
-// dist/ was the output before staging existed; sweep it so it does not linger
-// stale on machines that built an older revision.
-await rm(resolve(root, 'dist'), { recursive: true, force: true });
-await mkdir(outDir, { recursive: true });
-await writeFile(resolve(outDir, '.gitkeep'), '');
-
-const result = await build({
-  entryPoints: [resolve(root, 'src/index.ts')],
-  absWorkingDir: root, // makes metafile paths deterministic regardless of cwd
-  bundle: true,
-  platform: 'node',
-  target: 'node20',
-  format: 'esm',
-  outfile: resolve(outDir, 'index.js'),
-  external: EXTERNALS,
-  // Pin the workspace package to its path rather than letting node resolution
-  // walk up to the root node_modules symlink. Guard 1 below would catch a
-  // registry package winning that lookup, but pinning removes the possibility
-  // rather than detecting it after the fact.
-  alias: { '@money-kids/shared': resolve(SHARED_SRC, 'src/index.ts') },
-  sourcemap: true,
-  metafile: true,
-  banner: {
-    // The Node 20 GCF runtime does not enable source maps by default, so the
-    // emitted .map would be dead weight without this — a stack trace from a
-    // money callable would point at generated code. This costs a little cold
-    // start on every instance; accepted deliberately, because an unreadable
-    // stack trace from a ledger write costs more.
-    js:
-      "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" +
-      '\nprocess.setSourceMapsEnabled(true);',
-  },
-});
-
-const inputs = Object.keys(result.metafile.inputs).map((f) => resolve(root, f));
-
-// 1. Every bundled input must come from first-party source. `shared` carries
-// the minor-unit money helpers and resolves through the workspace symlink in
-// the ROOT node_modules — nothing in functions/ pins that resolution. If a
-// same-named package from a registry ever won, the bundle would still be
-// self-contained and the build would stay green while inlining the wrong
-// money code. Rejecting node_modules explicitly first: the positive check
-// alone would accept packages/shared/node_modules/**, which is a nested
-// dependency, not first-party source. Under --preserve-symlinks the shared
-// inputs resolve inside node_modules and this fails the build — noisy, but it
-// fails closed.
-const nested = inputs.filter((abs) => abs.split(sep).includes('node_modules'));
-const outside = inputs.filter((abs) => !FIRST_PARTY.some((dir) => isInside(dir, abs)));
-const foreign = [...new Set([...nested, ...outside])];
-if (foreign.length > 0) {
-  const allowed = FIRST_PARTY.map((d) => relative(repoRoot, d)).join(' or ');
-  fail(
-    `bundle inlines code from outside first-party source: ${foreign.slice(0, 5).join(', ')}` +
-      `${foreign.length > 5 ? ` (+${foreign.length - 5} more)` : ''}\n` +
-      `Every bundled input must live in ${allowed}, and never under node_modules.\n` +
-      'If packages/shared gained a runtime dependency, add it to EXTERNALS and to ' +
-      'functions/package.json so Cloud Build installs it. Otherwise @money-kids/shared ' +
-      'has stopped resolving to the local workspace package.',
-  );
-}
-
-// 2. Nothing may escape the bundle except a declared external or a node
-// builtin — anything else is a module Cloud Build cannot install, which would
-// surface as a cold-start crash instead of a build failure.
-const allowedSpecifiers = new Set([...EXTERNALS, ...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);
-// `firebase-admin/firestore` belongs to `firebase-admin`, so compare the
-// package name (scoped names keep two segments: `@scope/name`).
-const packageOf = (spec) => spec.split('/').slice(0, spec.startsWith('@') ? 2 : 1).join('/');
-const escaped = Object.entries(result.metafile.outputs)
-  // only the JS output can carry imports; whether the .map entry even has an
-  // `imports` key varies by esbuild version, and this is the guard that must
-  // not crash on itself
-  .filter(([file]) => file.endsWith('.js'))
-  // `external: true` is esbuild's own marker for an import it left unresolved,
-  // which is more direct and version-stable than inspecting the specifier shape
-  .flatMap(([, o]) => (o.imports ?? []).filter((i) => i.external).map((i) => i.path))
-  .filter((p) => !allowedSpecifiers.has(packageOf(p)));
-if (escaped.length > 0) {
-  fail(
-    `bundle is not self-contained: ${[...new Set(escaped)].join(', ')}\n` +
-      'Either inline it (remove from EXTERNALS) or, if it is published on npm, ' +
-      'add it to EXTERNALS and to functions/package.json dependencies.',
-  );
-}
-
-// 3. The shared money code must actually end up in the output. esbuild lists
-// an input it merely parsed, so checking that the file appears would pass even
-// if every export were tree-shaken away; bytesInOutput is what actually
-// shipped. Asserted from the metafile rather than by grepping for an
-// identifier, which would not survive renaming and would fail misleadingly on
-// an unrelated rename in shared.
-const sharedBytes = Object.entries(result.metafile.outputs)
-  .filter(([file]) => file.endsWith('.js'))
-  .flatMap(([, o]) => Object.entries(o.inputs ?? {}))
-  .filter(([file]) => isInside(SHARED_SRC, resolve(root, file)))
-  .reduce((total, [, info]) => total + (info.bytesInOutput ?? 0), 0);
-if (sharedBytes === 0) {
-  fail(
-    'no code from packages/shared survived into the bundle — @money-kids/shared ' +
-      'resolved to a stub, or every money helper was tree-shaken away',
-  );
-}
-
-// 4. The bundle's export surface must match the deploy contract exactly. A
-// callable that stops being exported deploys as a deleted function, which is
-// the failure mode that actually reaches families; an unexpected export means
-// the contract and the code have diverged.
-const exported = new Set(
-  Object.entries(result.metafile.outputs)
-    .filter(([file]) => file.endsWith('.js'))
-    .flatMap(([, o]) => o.exports ?? []),
-);
-const missingCallables = EXPECTED_CALLABLES.filter((name) => !exported.has(name));
-const unexpected = [...exported].filter((name) => !EXPECTED_CALLABLES.includes(name));
-if (missingCallables.length > 0) {
-  fail(
-    `callables missing from the bundle: ${missingCallables.join(', ')}\n` +
-      'Each would deploy as a deleted function. If this is intentional, remove it from ' +
-      'EXPECTED_CALLABLES in this script.',
-  );
-}
-if (unexpected.length > 0) {
-  fail(`bundle exports callables not in the deploy contract: ${unexpected.join(', ')} — add them to EXPECTED_CALLABLES`);
-}
-
-// 5. Every external must be declared, so the generated manifest carries a real
-// version. The reverse is only a warning: a dependency that is not an external
-// gets inlined, which is usually what we want but breaks for native modules
-// and dynamic requires.
-for (const dep of EXTERNALS) {
-  if (!pkg.dependencies?.[dep]) fail(`external missing from functions/package.json dependencies: ${dep}`);
-}
-const inlined = Object.keys(pkg.dependencies ?? {}).filter(
-  (dep) => !EXTERNALS.includes(dep) && dep !== '@money-kids/shared',
-);
-if (inlined.length > 0) {
-  console.warn(
-    `warning: ${inlined.join(', ')} will be inlined into the bundle. That is fine for pure JS, ` +
-      'but native modules and dynamic requires must be added to EXTERNALS instead.',
-  );
-}
-
-if (!pkg.engines?.node) fail('functions/package.json has no engines.node — GCF would silently pick a default runtime');
-
-// The committed lock is the source of truth for what gets deployed: it is
-// fixed by the commit, whereas the builder's node_modules is whatever that
-// machine last installed. Pinning the manifest from the lock is what makes
-// "reproducible from the commit" actually true.
-let lock = null;
-if (!refreshLock) {
-  try {
-    lock = JSON.parse(await readFile(lockSrc, 'utf8'));
-  } catch {
-    fail(`missing ${relative(repoRoot, lockSrc)} — run: npm run stage:lock -w @money-kids/functions`);
-  }
-}
-
-const pinned = Object.fromEntries(
-  await Promise.all(
-    EXTERNALS.map(async (dep) => {
-      const installed = await installedVersion(dep);
-      if (refreshLock) return [dep, installed];
-      const locked = lock.packages?.[`node_modules/${dep}`]?.version;
-      if (!locked) {
-        fail(
-          `${relative(repoRoot, lockSrc)} has no entry for ${dep} — ` +
-            'run: npm run stage:lock -w @money-kids/functions',
-        );
-      }
-      if (locked !== installed) {
-        const msg =
-          `${dep}: lock has ${locked}, node_modules has ${installed}. The deploy uses ${locked}.\n` +
-          'Refresh with: npm run stage:lock -w @money-kids/functions';
-        if (strict) fail(`refusing to deploy with a stale lock — ${msg}`);
-        console.warn(`warning: ${msg}`);
-      }
-      return [dep, locked];
-    }),
-  ),
-);
-
-const manifest = {
-  name: pkg.name,
-  private: true,
-  type: 'module',
-  main: 'index.js',
-  engines: pkg.engines,
-  dependencies: pinned,
-};
-await writeFile(resolve(outDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-
-// Pinning the two externals only fixes the top level; without a lockfile the
-// transitive tree floats, so two deploys of the same commit could ship
-// different code underneath firebase-admin.
-if (refreshLock) {
-  await execFileAsync('npm', ['install', '--package-lock-only', '--omit=dev', '--workspaces=false'], {
-    cwd: outDir,
-    shell: process.platform === 'win32', // npm is npm.cmd there
-  });
-  await copyFile(resolve(outDir, 'package-lock.json'), lockSrc);
-  console.log(`refreshed ${relative(repoRoot, lockSrc)} — commit it`);
-} else {
-  await copyFile(lockSrc, resolve(outDir, 'package-lock.json'));
-}
-
-console.log(
-  `staged ${outDir} — self-contained, first-party only, ${EXPECTED_CALLABLES.length} callables, pinned to ` +
-    Object.entries(pinned)
-      .map(([d, v]) => `${d}@${v}`)
-      .join(', '),
-);

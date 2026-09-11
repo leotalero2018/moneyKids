@@ -8,6 +8,7 @@
   "scripts": {
     "build": "node scripts/stage.mjs",
     "build:deploy": "node scripts/stage.mjs --strict",
+    "smoke": "node scripts/smoke.mjs deploy",
     "stage:lock": "node scripts/stage.mjs --refresh-lock",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

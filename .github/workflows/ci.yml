@@ -48,9 +48,12 @@ jobs:
       - name: Build the app
         run: npm run build:app
 
-      # build:deploy is the strict variant the predeploy hook uses, so lock
-      # drift fails CI instead of warning. Without it, CI could stay green
-      # while prod deployed a different firebase-admin than CI tested against.
+      # build:deploy is the strict variant the predeploy hook uses, so drift
+      # between deploy.lock.json and the installed tree fails CI instead of
+      # warning. This covers the two top-level externals only: the staged
+      # lockfile resolves its transitive tree independently of the root
+      # lockfile, so transitives can still differ between what CI tests and
+      # what prod runs.
       - name: Stage the functions bundle (strict)
         run: npm run build:deploy -w @money-kids/functions
 
@@ -61,12 +64,15 @@ jobs:
         working-directory: functions/deploy
         run: npm ci --omit=dev --workspaces=false
 
-      # Neither the metafile nor the import guards see a dynamic require from
-      # inlined code, and the banner injects createRequire. Importing the
-      # bundle is what actually catches a cold-start crash.
+      # Compares against the contract stage.mjs emits, so "right count, wrong
+      # names" cannot pass. The env vars stand in for what GCF injects; without
+      # them any module-scope Firebase config read would fail confusingly.
       - name: Smoke test that the bundle loads
-        working-directory: functions/deploy
-        run: node -e "import('./index.js').then(m => { const n = Object.keys(m).length; if (n !== 9) { throw new Error('expected 9 callables, got ' + n); } console.log('bundle loaded,', n, 'callables'); })"
+        working-directory: functions
+        env:
+          GCLOUD_PROJECT: money-kids-test
+          FIREBASE_CONFIG: '{"projectId":"money-kids-test"}'
+        run: npm run smoke -w @money-kids/functions
 
   e2e:
     runs-on: ubuntu-latest
