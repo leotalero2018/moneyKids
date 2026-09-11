@@ -2,7 +2,6 @@
   "name": "@money-kids/functions",
   "private": true,
   "type": "module",
-  "main": "deploy/index.js",
   "engines": {
     "node": "20"
   },
