@@ -24,7 +24,7 @@
     }
   },
   "functions": {
-    "source": "functions",
+    "source": "functions/deploy",
     "predeploy": [
       "npm run build -w @money-kids/functions"
     ]
