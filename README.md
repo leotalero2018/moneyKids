@@ -80,6 +80,18 @@ alongside a manifest listing only the published runtime externals.
   that ordering is undocumented, so the tracked empty directory is a hedge
   against it changing.
 
+**Source maps ship to production.** The bundle is deployed with its `.map` and
+`process.setSourceMapsEnabled(true)`, so a stack trace from a money callable
+points at real source rather than generated code. The tradeoffs are deliberate:
+the deployed artifact contains first-party source including the money helpers,
+and enabling source maps costs a little cold start on every instance. An
+unreadable stack trace from a ledger write costs more.
+
+**Known gap.** The emulator loads the staged bundle but resolves
+`firebase-admin` by hoisting to the root `node_modules`, while production
+installs the pinned staged tree. `npm run build` reports where the two
+disagree, loudly for packages on the ledger path. Tracked in #6.
+
 The build enforces its own invariants (first-party-only inputs, a self-contained
 bundle, `shared` surviving tree-shaking, the callable export surface, and
 lockfile consistency) and fails rather than deploying something subtly wrong.

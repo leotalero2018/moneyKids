@@ -166,20 +166,28 @@ describe('staging guards', () => {
     expect(message).toContain('node-fetch');
   });
 
-  it('refuses when the tested and deployed trees disagree on a ledger-path package', async () => {
+  it('warns, but does not fail, when the tested and deployed trees diverge on the ledger path', async () => {
     const dir = await makeFixture();
     // The root lockfile governs what test:functions runs against; the staged
-    // lock governs production. A Firestore client that differs between them is
-    // exercised by nothing before it reaches families.
+    // lock governs production. Divergence here means the suite guarding the
+    // money callables is not exercising the code that runs them — worth
+    // shouting about, but not a failure: the two lockfiles resolve
+    // independently, so failing would deadlock the refresh workflow whose job
+    // is to move the deployed tree.
     await edit(lockIn(dir), (s) => {
       const lock = JSON.parse(s);
       lock.packages['node_modules/@google-cloud/firestore'].version = '0.0.1';
       return JSON.stringify(lock);
     });
     const { code, message } = await stage(dir);
-    expect(code).toBe(1);
+    expect(code).toBe(0);
     expect(message).toContain('carry a ledger write');
     expect(message).toContain('@google-cloud/firestore');
+
+    // and still not a failure under --strict, deliberately
+    const strict = await stage(dir, '--strict');
+    expect(strict.code).toBe(0);
+    expect(strict.message).toContain('carry a ledger write');
   });
 
   it('refuses when the committed lock disagrees with the manifest', async () => {

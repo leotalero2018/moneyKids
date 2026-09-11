@@ -65,9 +65,12 @@ jobs:
       # The lock/manifest pair is exactly what failed the first deploy, and
       # npm ci is the only thing that really validates it. --workspaces=false
       # stops npm resolving workspace context from the repo root.
+      # --ignore-scripts matches refresh-deploy-lock.yml: this validates that
+      # the lock/manifest pair resolves and installs, which needs no lifecycle
+      # scripts (protobufjs declares one).
       - name: Validate the staged manifest installs
         working-directory: functions/deploy
-        run: npm ci --omit=dev --workspaces=false
+        run: npm ci --omit=dev --workspaces=false --ignore-scripts
 
       # Compares export names against the shared deploy contract, so "right
       # count, wrong names" cannot pass. smoke.mjs sets the Firebase env itself
