@@ -65,6 +65,10 @@ jobs:
       # running stage:lock locally.
       - name: Push the refreshed lock to the target branch
         if: inputs.branch != ''
+        # Passed through env, never interpolated into the script: this job
+        # holds a token with push and PR rights.
+        env:
+          BRANCH: ${{ inputs.branch }}
         run: |
           if git diff --quiet -- functions/deploy.lock.json; then
             echo "lock unchanged; nothing to push"
@@ -74,7 +78,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add functions/deploy.lock.json
           git commit -m "chore: refresh functions deploy lockfile"
-          git push origin HEAD:"${{ inputs.branch }}"
+          git push origin HEAD:"$BRANCH"
 
       - name: Open a PR if the lock moved
         if: inputs.branch == ''

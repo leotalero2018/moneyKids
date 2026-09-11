@@ -23,7 +23,8 @@ import {
   INLINED_WORKSPACE_PACKAGE,
   MONEY_CRITICAL_PACKAGES,
   REQUIRED_SHARED_MODULES,
-  SHARED_MODULES_EXEMPT_FROM_BYTES,
+  SHARED_BARRELS_AND_TYPES,
+  SHARED_KNOWN_DIVERGENT,
 } from './deploy-contract.mjs';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -219,7 +220,15 @@ async function main() {
       acc.set(resolve(root, file), info.bytesInOutput ?? 0);
       return acc;
     }, new Map());
-  const exempt = new Set(SHARED_MODULES_EXEMPT_FROM_BYTES.map((m) => resolve(SHARED_SRC, m)));
+  // Known divergences are exempted from failing the build, but never quietly:
+  // each one is a rule the callables re-implement, which is how an invalid
+  // transition or a missing event write ships while the rules tests stay green.
+  for (const { module, why, issue } of SHARED_KNOWN_DIVERGENT) {
+    console.warn(`warning: packages/shared/${module} is not in the deployed bundle — ${why} (${issue})`);
+  }
+  const exempt = new Set(
+    [...SHARED_BARRELS_AND_TYPES, ...SHARED_KNOWN_DIVERGENT.map((d) => d.module)].map((m) => resolve(SHARED_SRC, m)),
+  );
   // Everything shared that esbuild parsed, plus the modules that must be there
   // whether or not anything currently imports them.
   // Candidates come from metafile.inputs (everything esbuild parsed), not from

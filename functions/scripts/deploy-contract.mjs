@@ -35,14 +35,20 @@ export const EXTERNALS = ['firebase-admin', 'firebase-functions'];
 // money arithmetic is guarded the day it is written, rather than the day
 // someone remembers to add it to a list. Barrels and type-only modules
 // legitimately contribute nothing, so they opt out here.
-export const SHARED_MODULES_EXEMPT_FROM_BYTES = [
-  'src/index.ts', // re-export barrel: contributes no code of its own
-  // The invoice state machine is consumed by the app and the rules tests; no
-  // callable imports it, so it is parsed through the barrel and then dropped.
-  // Tracked in #7: the callables enforce transitions with their own inline
-  // checks instead. When that is unified, remove this line so the guard covers
-  // it.
-  'src/invoiceStatus.ts',
+// Modules that legitimately contribute nothing and are expected to: barrels
+// and type-only files. Exempted silently.
+export const SHARED_BARRELS_AND_TYPES = ['src/index.ts'];
+
+// Modules that are absent from the bundle because the callables re-implement
+// what they hold. Each prints a warning on every build: this is a divergence
+// to be closed, not a fact to be filed away, and the next person should not
+// read the exemption as "fine to be absent".
+export const SHARED_KNOWN_DIVERGENT = [
+  {
+    module: 'src/invoiceStatus.ts',
+    why: 'the invoice state machine (canTransition) is used by the app and the rules tests, while the callables enforce transitions with inline status comparisons — the same rule in three places with no shared source of truth',
+    issue: '#7',
+  },
 ];
 
 // Always checked even if nothing imports them, so deleting the last caller of
