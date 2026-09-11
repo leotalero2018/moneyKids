@@ -24,6 +24,7 @@ import {
   REQUIRED_SHARED_MODULES,
 } from './deploy-contract.mjs';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { builtinModules } from 'node:module';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -370,9 +371,9 @@ async function main() {
     throw e;
   }
   await rm(previous, { recursive: true, force: true });
+  // Committed so the staged directory exists in a fresh clone; firebase.json's
+  // functions.ignore keeps it out of the upload.
   await writeFile(resolve(outDir, '.gitkeep'), '');
-  // keep the placeholder out of the upload to GCF
-  await writeFile(resolve(outDir, '.gcloudignore'), '.gitkeep\n.gcloudignore\n');
 
   console.log(
     `staged ${outDir} — self-contained, first-party only, ${EXPECTED_CALLABLES.length} callables, pinned to ` +
@@ -385,8 +386,13 @@ async function main() {
 main().catch(async (e) => {
   // Never leave partial staging directories behind for a later step to find.
   const here = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  for (const debris of ['.deploy-staging', 'deploy.old']) {
-    await rm(resolve(here, debris), { recursive: true, force: true }).catch(() => {});
+  await rm(resolve(here, '.deploy-staging'), { recursive: true, force: true }).catch(() => {});
+  // deploy.old is only debris while deploy/ exists. If both the promote and the
+  // restore failed, it is the ONLY complete artifact left and deleting it would
+  // leave functions.source missing mid-deploy — the exact thing the promote
+  // dance exists to prevent.
+  if (existsSync(resolve(here, 'deploy'))) {
+    await rm(resolve(here, 'deploy.old'), { recursive: true, force: true }).catch(() => {});
   }
   console.error(e instanceof StagingError ? `Error: ${e.message}` : e);
   process.exit(1);

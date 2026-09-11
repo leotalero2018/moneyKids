@@ -42,6 +42,11 @@ jobs:
       - name: Cloud Functions tests
         run: npm run test:functions
 
+      # Build-only: these run stage.mjs against a tmpdir fixture and need no
+      # emulator, so they are not gated on one starting.
+      - name: Staging guard tests
+        run: npm run test:staging
+
       - name: App component tests
         run: npm run test:app
 

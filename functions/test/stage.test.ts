@@ -8,7 +8,7 @@
 // So every test copies functions/ and packages/shared into a tmpdir, mutates
 // the copy, and runs the real stage.mjs there. Nothing in the repo is touched.
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';

@@ -27,6 +27,9 @@
     "source": "functions/deploy",
     "predeploy": [
       "npm run build:deploy -w @money-kids/functions"
+    ],
+    "ignore": [
+      ".gitkeep"
     ]
   },
   "hosting": {

@@ -10,7 +10,8 @@
     "build:deploy": "node scripts/stage.mjs --strict && node scripts/smoke.mjs deploy",
     "smoke": "node scripts/smoke.mjs deploy",
     "stage:lock": "node scripts/stage.mjs --refresh-lock",
-    "test": "vitest run",
+    "test": "vitest run --exclude \"test/**\"",
+    "test:staging": "vitest run test/",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
