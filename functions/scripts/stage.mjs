@@ -17,7 +17,7 @@
 //
 //   npm run stage:lock -w @money-kids/functions
 import { build } from 'esbuild';
-import { EXPECTED_CALLABLES } from './callables.mjs';
+import { EXPECTED_CALLABLES, EXTERNALS } from './deploy-contract.mjs';
 import { execFile } from 'node:child_process';
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { builtinModules } from 'node:module';
@@ -51,9 +51,6 @@ const stageDir = resolve(root, '.deploy-staging');
   // the emulator and test loops.
   const strict = process.argv.includes('--strict');
 
-  // Anything NOT listed here must be inlined into the bundle. Adding an entry
-  // means Cloud Build has to install it, so it must be published on npm.
-  const EXTERNALS = ['firebase-admin', 'firebase-functions'];
 
   // Only these trees may contribute code to the bundle. Listed package by
   // package so that adding a workspace package does not silently make it
@@ -229,11 +226,11 @@ const stageDir = resolve(root, '.deploy-staging');
     fail(
       `callables missing from the bundle: ${missingCallables.join(', ')}\n` +
         'Each would deploy as a deleted function. If this is intentional, remove it from ' +
-        'EXPECTED_CALLABLES in scripts/callables.mjs.',
+        'EXPECTED_CALLABLES in scripts/deploy-contract.mjs.',
     );
   }
   if (unexpected.length > 0) {
-    fail(`bundle exports callables not in the deploy contract: ${unexpected.join(', ')} — add them to EXPECTED_CALLABLES in scripts/callables.mjs`);
+    fail(`bundle exports callables not in the deploy contract: ${unexpected.join(', ')} — add them to EXPECTED_CALLABLES in scripts/deploy-contract.mjs`);
   }
 
   // 5. Every external must be declared, so the generated manifest carries a real

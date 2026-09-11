@@ -9,7 +9,7 @@
 //   node scripts/smoke.mjs deploy
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { EXPECTED_CALLABLES as expected } from './callables.mjs';
+import { EXPECTED_CALLABLES as expected } from './deploy-contract.mjs';
 
 const dir = resolve(process.argv[2] ?? 'deploy');
 const mod = await import(pathToFileURL(resolve(dir, 'index.js')).href);
