@@ -20,14 +20,14 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20.11'
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       - name: Re-resolve the staged tree
         run: npm run stage:lock -w @money-kids/functions
@@ -41,12 +41,17 @@ jobs:
           npm run build:deploy -w @money-kids/functions
           npm run test:staging
 
+      # --ignore-scripts: this job exists to pull in unreviewed dependency
+      # versions, and it holds a token with push and PR rights. Running install
+      # scripts from the tree it just re-resolved would hand that token to any
+      # compromised transitive release (protobufjs already declares one). The
+      # point here is validating the lock/manifest pair, which needs no scripts.
       - name: Install the refreshed tree exactly as Cloud Build will
         working-directory: functions/deploy
-        run: npm ci --omit=dev --workspaces=false
+        run: npm ci --omit=dev --workspaces=false --ignore-scripts
 
       - name: Open a PR if the lock moved
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6
         with:
           commit-message: 'chore: refresh functions deploy lockfile'
           branch: chore/refresh-deploy-lock

@@ -11,6 +11,7 @@
 // and is never uploaded with the function.
 //
 //   node scripts/smoke.mjs deploy
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { EXPECTED_CALLABLES as expected } from './deploy-contract.mjs';
@@ -21,11 +22,19 @@ import { EXPECTED_CALLABLES as expected } from './deploy-contract.mjs';
 //
 // Assigned unconditionally, never defaulted. On a production deploy
 // firebase-tools puts the LIVE project in GCLOUD_PROJECT, and this imports the
-// bundle — running module-scope initializeApp() — moments before deploying it,
-// with application default credentials available. Module scope should only be
-// initializing, but nothing enforces that, and this is the one file where
-// "money mutations happen only inside callables" has to hold. So: a dummy
-// project, emulator hosts on a dead port, and no credentials. Fail closed.
+// bundle — running module-scope initializeApp() — moments before deploying it.
+// Module scope should only be initializing, but nothing enforces that, and
+// this is the one file where "money mutations happen only inside callables"
+// has to hold.
+//
+// What this actually guarantees: a dummy project id, and Firestore, Auth and
+// Storage pointed at a dead port. What it does NOT guarantee is the absence of
+// credentials — application default credentials live in a file that
+// google-auth-library finds with no environment variable at all, so clearing
+// the env vars is not enough. CLOUDSDK_CONFIG moves that lookup to a scratch
+// path, but an arbitrary GCP client or a raw REST call at module scope could
+// still authenticate some other way. Treat this as defence in depth, not a
+// sandbox.
 process.env.GCLOUD_PROJECT = 'money-kids-smoke';
 process.env.GOOGLE_CLOUD_PROJECT = 'money-kids-smoke';
 process.env.FIREBASE_CONFIG = JSON.stringify({ projectId: 'money-kids-smoke' });
@@ -34,6 +43,9 @@ process.env.FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:1';
 process.env.STORAGE_EMULATOR_HOST = 'http://127.0.0.1:1';
 delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
 delete process.env.GOOGLE_CREDENTIALS;
+// Point the gcloud config — where `gcloud auth application-default login`
+// writes its credentials file — at a directory that holds none.
+process.env.CLOUDSDK_CONFIG = resolve(tmpdir(), 'money-kids-smoke-gcloud');
 
 const dir = resolve(process.argv[2] ?? 'deploy');
 const mod = await import(pathToFileURL(resolve(dir, 'index.js')).href);
