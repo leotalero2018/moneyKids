@@ -39,8 +39,9 @@ export const SHARED_MODULES_EXEMPT_FROM_BYTES = [
   'src/index.ts', // re-export barrel: contributes no code of its own
   // The invoice state machine is consumed by the app and the rules tests; no
   // callable imports it, so it is parsed through the barrel and then dropped.
-  // If a callable ever starts enforcing transitions, remove this line so the
-  // guard covers it.
+  // Tracked in #7: the callables enforce transitions with their own inline
+  // checks instead. When that is unified, remove this line so the guard covers
+  // it.
   'src/invoiceStatus.ts',
 ];
 
@@ -52,3 +53,15 @@ export const REQUIRED_SHARED_MODULES = ['src/money.ts'];
 // appear in the generated manifest. Also the alias target, so one edit here
 // drives resolution, the first-party allow-list and the manifest check.
 export const INLINED_WORKSPACE_PACKAGE = '@money-kids/shared';
+
+// Packages on the ledger path. The root lockfile governs what `test:functions`
+// runs against; deploy.lock.json governs what production runs. They resolve
+// independently, so a behavioural change in any of these would be untested by
+// the suite that guards the money callables. Divergence here fails the build;
+// divergence elsewhere is reported.
+export const MONEY_CRITICAL_PACKAGES = [
+  'firebase-admin',
+  'firebase-functions',
+  '@google-cloud/firestore',
+  '@grpc/grpc-js',
+];

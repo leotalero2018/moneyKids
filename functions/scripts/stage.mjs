@@ -21,6 +21,7 @@ import {
   EXPECTED_CALLABLES,
   EXTERNALS,
   INLINED_WORKSPACE_PACKAGE,
+  MONEY_CRITICAL_PACKAGES,
   REQUIRED_SHARED_MODULES,
   SHARED_MODULES_EXEMPT_FROM_BYTES,
 } from './deploy-contract.mjs';
@@ -369,6 +370,41 @@ async function main() {
       );
     }
     await copyFile(lockSrc, resolve(stageDir, 'package-lock.json'));
+  }
+
+  // 8. The tree CI tests against and the tree production runs must agree on
+  // the packages that carry a ledger write. The root lockfile and
+  // deploy.lock.json resolve independently, so they can drift apart silently —
+  // and a change in the Firestore client or the gRPC layer would then be
+  // exercised by nothing before it reaches families.
+  if (lock) {
+    const rootLock = JSON.parse(await readFile(resolve(repoRoot, 'package-lock.json'), 'utf8'));
+    const versionsOf = (packages, dep) => packages[`node_modules/${dep}`]?.version;
+    const compared = [...new Set([...Object.keys(rootLock.packages), ...Object.keys(lock.packages)])]
+      .filter((k) => k.startsWith('node_modules/'))
+      .map((k) => k.slice('node_modules/'.length))
+      .filter((dep) => versionsOf(rootLock.packages, dep) && versionsOf(lock.packages, dep))
+      .map((dep) => ({
+        dep,
+        tested: versionsOf(rootLock.packages, dep),
+        deployed: versionsOf(lock.packages, dep),
+      }))
+      .filter(({ tested, deployed }) => tested !== deployed);
+
+    const critical = compared.filter(({ dep }) => MONEY_CRITICAL_PACKAGES.includes(dep));
+    if (critical.length > 0) {
+      fail(
+        'the tested and deployed trees disagree on packages that carry a ledger write:\n' +
+          critical.map(({ dep, tested, deployed }) => `  ${dep}: tests ${tested}, deploys ${deployed}`).join('\n') +
+          '\nRefresh the staged lock (npm run stage:lock -w @money-kids/functions) or align the root lockfile.',
+      );
+    }
+    if (compared.length > 0) {
+      console.warn(
+        `warning: ${compared.length} package(s) differ between the tested and deployed trees, none on the ` +
+          `ledger path: ${compared.map(({ dep, tested, deployed }) => `${dep} ${tested}/${deployed}`).join(', ')}`,
+      );
+    }
   }
 
   // Everything passed: swap the staged directory into place. Move the old one

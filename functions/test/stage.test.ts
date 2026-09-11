@@ -35,6 +35,8 @@ async function makeFixture(): Promise<string> {
     recursive: true,
     filter: skip,
   });
+  // guard 8 compares the staged lock against the root lockfile
+  await cp(resolve(repoRoot, 'package-lock.json'), resolve(dir, 'package-lock.json'));
   await symlink(resolve(repoRoot, 'node_modules'), resolve(dir, 'node_modules'), 'dir');
   fixture = dir;
   return dir;
@@ -164,6 +166,22 @@ describe('staging guards', () => {
     expect(message).toContain('node-fetch');
   });
 
+  it('refuses when the tested and deployed trees disagree on a ledger-path package', async () => {
+    const dir = await makeFixture();
+    // The root lockfile governs what test:functions runs against; the staged
+    // lock governs production. A Firestore client that differs between them is
+    // exercised by nothing before it reaches families.
+    await edit(lockIn(dir), (s) => {
+      const lock = JSON.parse(s);
+      lock.packages['node_modules/@google-cloud/firestore'].version = '0.0.1';
+      return JSON.stringify(lock);
+    });
+    const { code, message } = await stage(dir);
+    expect(code).toBe(1);
+    expect(message).toContain('carry a ledger write');
+    expect(message).toContain('@google-cloud/firestore');
+  });
+
   it('refuses when the committed lock disagrees with the manifest', async () => {
     const dir = await makeFixture();
     await edit(lockIn(dir), (s) => {
@@ -181,10 +199,13 @@ describe('staging guards', () => {
     const stale = (s: string) => {
       const lock = JSON.parse(s);
       lock.packages['node_modules/firebase-admin'].version = '12.6.0';
-      lock.packages[''].dependencies['firebase-admin'] = '12.6.0';
+      if (lock.packages['']?.dependencies) lock.packages[''].dependencies['firebase-admin'] = '12.6.0';
       return JSON.stringify(lock);
     };
     await edit(lockIn(dir), stale);
+    // Move the root lockfile too, so guard 8 stays satisfied and this test
+    // isolates lock-versus-installed drift rather than tested-versus-deployed.
+    await edit(resolve(dir, 'package-lock.json'), stale);
     const lenient = await stage(dir);
     expect(lenient.code).toBe(0);
     expect(lenient.message).toContain('warning:');
