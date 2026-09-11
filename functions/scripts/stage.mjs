@@ -10,10 +10,14 @@
 // externals. functions/package.json stays honest for local dev, typecheck and
 // vitest; Cloud Build never sees the workspace package.
 import { build } from 'esbuild';
+import { execFile } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { builtinModules } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(root, '..');
@@ -23,8 +27,13 @@ const outDir = resolve(root, 'deploy');
 // means Cloud Build has to install it, so it must be published on npm.
 const EXTERNALS = ['firebase-admin', 'firebase-functions'];
 
-// Only these trees may contribute code to the bundle.
-const FIRST_PARTY = [resolve(root, 'src'), resolve(repoRoot, 'packages')];
+// Only these trees may contribute code to the bundle. Listed package by
+// package so that adding a workspace package does not silently make it
+// shippable into the functions runtime.
+const FIRST_PARTY = [resolve(root, 'src'), resolve(repoRoot, 'packages/shared')];
+
+// The bundle must actually contain the shared money code.
+const REQUIRED_INPUT = resolve(repoRoot, 'packages/shared');
 
 // A symbol that must survive bundling, to catch `shared` resolving to a stub
 // or being tree-shaken away entirely.
@@ -62,9 +71,16 @@ const result = await build({
   format: 'esm',
   outfile: resolve(outDir, 'index.js'),
   external: EXTERNALS,
-  sourcemap: true, // exceptions in a money callable must map to real source
+  sourcemap: true,
   metafile: true,
-  banner: { js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" },
+  banner: {
+    // The Node 20 GCF runtime does not enable source maps by default, so the
+    // emitted .map would be dead weight without this — a stack trace from a
+    // money callable would point at generated code.
+    js:
+      "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" +
+      '\nprocess.setSourceMapsEnabled(true);',
+  },
 });
 
 const fail = (msg) => {
@@ -76,9 +92,11 @@ const fail = (msg) => {
 // the ROOT node_modules — nothing in functions/ pins that resolution. If a
 // same-named package from a registry ever won, the bundle would still be
 // self-contained and the build would stay green while inlining the wrong
-// money code. Asserting the positive (paths under functions/src or packages/)
-// rather than the absence of `node_modules` keeps this working under
-// preserveSymlinks and whatever cwd the script is invoked from.
+// money code. Asserting the positive (resolved paths under the first-party
+// trees) rather than the absence of `node_modules` removes the dependency on
+// esbuild resolving symlinks and on the cwd the script runs from. Under
+// --preserve-symlinks the shared inputs resolve inside node_modules instead
+// and this check fails the build — noisy, but it fails closed.
 const foreign = Object.keys(result.metafile.inputs)
   .map((f) => resolve(root, f))
   .filter((abs) => !FIRST_PARTY.some((dir) => abs.startsWith(`${dir}/`)));
@@ -98,8 +116,12 @@ const allowed = new Set([...EXTERNALS, ...builtinModules, ...builtinModules.map(
 // `firebase-admin/firestore` belongs to `firebase-admin`, so compare the
 // package name (scoped names keep two segments: `@scope/name`).
 const packageOf = (spec) => spec.split('/').slice(0, spec.startsWith('@') ? 2 : 1).join('/');
-const escaped = [...Object.values(result.metafile.outputs)]
-  .flatMap((o) => o.imports.map((i) => i.path))
+const escaped = Object.entries(result.metafile.outputs)
+  // only the JS output can carry imports; whether the .map entry even has an
+  // `imports` key varies by esbuild version, and this is the guard that must
+  // not crash on itself
+  .filter(([file]) => file.endsWith('.js'))
+  .flatMap(([, o]) => (o.imports ?? []).map((i) => i.path))
   .filter((p) => !p.startsWith('./') && !p.startsWith('../') && !allowed.has(packageOf(p)));
 if (escaped.length > 0) {
   fail(
@@ -109,10 +131,18 @@ if (escaped.length > 0) {
   );
 }
 
-// 3. The shared money code must actually be in the output.
+// 3. The shared money code must actually be in the bundle. Assert it from the
+// metafile rather than by grepping the output: an identifier rename in shared
+// would otherwise fail the build with a misleading "resolved to a stub".
+const inputs = Object.keys(result.metafile.inputs).map((f) => resolve(root, f));
+if (!inputs.some((abs) => abs.startsWith(`${REQUIRED_INPUT}/`))) {
+  fail('bundle contains no code from packages/shared — @money-kids/shared resolved to a stub or empty module');
+}
+// Secondary: catches shared resolving to a real-but-wrong module that happens
+// to sit at the same path.
 const bundled = await readFile(resolve(outDir, 'index.js'), 'utf8');
 if (!bundled.includes(SHARED_SENTINEL)) {
-  fail(`bundle is missing ${SHARED_SENTINEL} from @money-kids/shared — it resolved to a stub or was tree-shaken`);
+  fail(`bundle is missing ${SHARED_SENTINEL} from @money-kids/shared — check that the money helpers are still exported`);
 }
 
 // 4. Pin externals to the versions actually installed here. Cloud Build gets
@@ -137,8 +167,17 @@ const manifest = {
   dependencies: pinned,
 };
 await writeFile(resolve(outDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+// Pinning the two externals only fixes the top level; without a lockfile the
+// transitive tree still floats, so two deploys of the same commit could ship
+// different code underneath firebase-admin. Generating one here makes Cloud
+// Build resolve with `npm ci` against an exact tree. --workspaces=false stops
+// npm from walking up and treating the repo root as the project.
+await execFileAsync('npm', ['install', '--package-lock-only', '--omit=dev', '--workspaces=false'], {
+  cwd: outDir,
+});
 console.log(
-  `staged ${outDir} — self-contained, first-party only, pinned to ` +
+  `staged ${outDir} — self-contained, first-party only, lockfile written, pinned to ` +
     Object.entries(pinned)
       .map(([d, v]) => `${d}@${v}`)
       .join(', '),
