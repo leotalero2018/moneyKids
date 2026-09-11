@@ -17,7 +17,12 @@
 //
 //   npm run stage:lock -w @money-kids/functions
 import { build } from 'esbuild';
-import { EXPECTED_CALLABLES, EXTERNALS } from './deploy-contract.mjs';
+import {
+  EXPECTED_CALLABLES,
+  EXTERNALS,
+  INLINED_WORKSPACE_PACKAGE,
+  REQUIRED_SHARED_MODULES,
+} from './deploy-contract.mjs';
 import { execFile } from 'node:child_process';
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { builtinModules } from 'node:module';
@@ -125,7 +130,7 @@ async function main() {
     // and vitest read exactly what gets bundled here. If shared ever gains a
     // dist/ build, this alias must follow it or CI would be testing different
     // money helpers than the ones deployed.
-    alias: { '@money-kids/shared': resolve(SHARED_SRC, 'src/index.ts') },
+    alias: { [INLINED_WORKSPACE_PACKAGE]: resolve(SHARED_SRC, 'src/index.ts') },
     sourcemap: true,
     metafile: true,
     banner: {
@@ -201,15 +206,19 @@ async function main() {
   // shipped. Asserted from the metafile rather than by grepping for an
   // identifier, which would not survive renaming and would fail misleadingly on
   // an unrelated rename in shared.
-  const sharedBytes = Object.entries(result.metafile.outputs)
+  const contributed = Object.entries(result.metafile.outputs)
     .filter(([file]) => file.endsWith('.js'))
     .flatMap(([, o]) => Object.entries(o.inputs ?? {}))
-    .filter(([file]) => isInside(SHARED_SRC, resolve(root, file)))
-    .reduce((total, [, info]) => total + (info.bytesInOutput ?? 0), 0);
-  if (sharedBytes === 0) {
+    .reduce((acc, [file, info]) => {
+      acc.set(resolve(root, file), info.bytesInOutput ?? 0);
+      return acc;
+    }, new Map());
+  const missingShared = REQUIRED_SHARED_MODULES.filter((mod) => !(contributed.get(resolve(SHARED_SRC, mod)) > 0));
+  if (missingShared.length > 0) {
     fail(
-      'no code from packages/shared survived into the bundle — @money-kids/shared ' +
-        'resolved to a stub, or every money helper was tree-shaken away',
+      `no code survived into the bundle from: ${missingShared.map((m) => `packages/shared/${m}`).join(', ')}\n` +
+        '@money-kids/shared resolved to a stub, or those helpers were tree-shaken away. ' +
+        'Checking shared in aggregate would miss exactly this.',
     );
   }
 
@@ -245,7 +254,7 @@ async function main() {
     if (!pkg.dependencies?.[dep]) fail(`external missing from functions/package.json dependencies: ${dep}`);
   }
   const inlined = Object.keys(pkg.dependencies ?? {}).filter(
-    (dep) => !EXTERNALS.includes(dep) && dep !== '@money-kids/shared',
+    (dep) => !EXTERNALS.includes(dep) && dep !== INLINED_WORKSPACE_PACKAGE,
   );
   if (inlined.length > 0) {
     console.warn(
@@ -348,10 +357,22 @@ async function main() {
   // leave a mid-flight deploy with no source directory at all.
   const previous = `${outDir}.old`;
   await rm(previous, { recursive: true, force: true });
-  await rename(outDir, previous).catch(() => {}); // absent on a first build
-  await rename(stageDir, outDir);
+  const hadPrevious = await rename(outDir, previous).then(
+    () => true,
+    () => false, // absent on a first build
+  );
+  try {
+    await rename(stageDir, outDir);
+  } catch (e) {
+    // Put the working artifact back rather than leaving no functions.source at
+    // all — predeploy has already pointed firebase at this directory.
+    if (hadPrevious) await rename(previous, outDir).catch(() => {});
+    throw e;
+  }
   await rm(previous, { recursive: true, force: true });
   await writeFile(resolve(outDir, '.gitkeep'), '');
+  // keep the placeholder out of the upload to GCF
+  await writeFile(resolve(outDir, '.gcloudignore'), '.gitkeep\n.gcloudignore\n');
 
   console.log(
     `staged ${outDir} — self-contained, first-party only, ${EXPECTED_CALLABLES.length} callables, pinned to ` +
@@ -362,11 +383,11 @@ async function main() {
 }
 
 main().catch(async (e) => {
-  // Never leave a partial staging directory behind for a later step to find.
-  await rm(resolve(dirname(fileURLToPath(import.meta.url)), '..', '.deploy-staging'), {
-    recursive: true,
-    force: true,
-  }).catch(() => {});
+  // Never leave partial staging directories behind for a later step to find.
+  const here = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  for (const debris of ['.deploy-staging', 'deploy.old']) {
+    await rm(resolve(here, debris), { recursive: true, force: true }).catch(() => {});
+  }
   console.error(e instanceof StagingError ? `Error: ${e.message}` : e);
   process.exit(1);
 });
