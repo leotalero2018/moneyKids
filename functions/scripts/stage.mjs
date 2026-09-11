@@ -39,10 +39,10 @@ async function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const repoRoot = resolve(root, '..');
   const outDir = resolve(root, 'deploy');
-// Guards run after esbuild has already written output, so build into a temp
-// directory and promote it only once every check has passed. Otherwise a
-// failed build leaves a bundle with no manifest sitting in deploy/.
-const stageDir = resolve(root, '.deploy-staging');
+  // Guards run after esbuild has already written output, so build into a temp
+  // directory and promote it only once every check has passed. Otherwise a
+  // failed build leaves a bundle with no manifest sitting in deploy/.
+  const stageDir = resolve(root, '.deploy-staging');
   const lockSrc = resolve(root, 'deploy.lock.json');
   const refreshLock = process.argv.includes('--refresh-lock');
   // Version drift between the committed lock and the builder's node_modules only
@@ -51,13 +51,11 @@ const stageDir = resolve(root, '.deploy-staging');
   // the emulator and test loops.
   const strict = process.argv.includes('--strict');
 
-
   // Only these trees may contribute code to the bundle. Listed package by
   // package so that adding a workspace package does not silently make it
   // shippable into the functions runtime.
   const SHARED_SRC = resolve(repoRoot, 'packages/shared');
   const FIRST_PARTY = [resolve(root, 'src'), SHARED_SRC];
-
 
   const pkg = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 
@@ -175,7 +173,11 @@ const stageDir = resolve(root, '.deploy-staging');
   const allowedSpecifiers = new Set([...EXTERNALS, ...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);
   // `firebase-admin/firestore` belongs to `firebase-admin`, so compare the
   // package name (scoped names keep two segments: `@scope/name`).
-  const packageOf = (spec) => spec.split('/').slice(0, spec.startsWith('@') ? 2 : 1).join('/');
+  const packageOf = (spec) =>
+    spec
+      .split('/')
+      .slice(0, spec.startsWith('@') ? 2 : 1)
+      .join('/');
   const escaped = Object.entries(result.metafile.outputs)
     // only the JS output can carry imports; whether the .map entry even has an
     // `imports` key varies by esbuild version, and this is the guard that must
@@ -230,7 +232,9 @@ const stageDir = resolve(root, '.deploy-staging');
     );
   }
   if (unexpected.length > 0) {
-    fail(`bundle exports callables not in the deploy contract: ${unexpected.join(', ')} — add them to EXPECTED_CALLABLES in scripts/deploy-contract.mjs`);
+    fail(
+      `bundle exports callables not in the deploy contract: ${unexpected.join(', ')} — add them to EXPECTED_CALLABLES in scripts/deploy-contract.mjs`,
+    );
   }
 
   // 5. Every external must be declared, so the generated manifest carries a real
@@ -250,7 +254,8 @@ const stageDir = resolve(root, '.deploy-staging');
     );
   }
 
-  if (!pkg.engines?.node) fail('functions/package.json has no engines.node — GCF would silently pick a default runtime');
+  if (!pkg.engines?.node)
+    fail('functions/package.json has no engines.node — GCF would silently pick a default runtime');
 
   // The committed lock is the source of truth for what gets deployed: it is
   // fixed by the commit, whereas the builder's node_modules is whatever that
@@ -316,24 +321,36 @@ const stageDir = resolve(root, '.deploy-staging');
     // removed-dep direction, where EXTERNALS shrinks and the lock still lists
     // the old root dependency set.
     const lockRoot = lock.packages?.['']?.dependencies ?? {};
-    const sameKeys =
+    const describe = (o) =>
+      Object.entries(o)
+        .map(([d, v]) => `${d}@${v}`)
+        .join(', ') || 'none';
+    // Compare versions too, not just the key set: pinned is read from
+    // packages['node_modules/<dep>'].version while this reads packages[''], and
+    // a lock where those two disagree would sail past a keys-only check and
+    // then fail inside Cloud Build's npm ci — the exact thing this pre-empts.
+    const sameDeps =
       Object.keys(lockRoot).length === Object.keys(pinned).length &&
-      Object.keys(pinned).every((dep) => lockRoot[dep] !== undefined);
-    if (!sameKeys) {
+      Object.entries(pinned).every(([dep, version]) => lockRoot[dep] === version);
+    if (!sameDeps) {
       fail(
-        `${relative(repoRoot, lockSrc)} root dependencies [${Object.keys(lockRoot).join(', ') || 'none'}] ` +
-          `do not match the staged manifest [${Object.keys(pinned).join(', ')}]. ` +
+        `${relative(repoRoot, lockSrc)} root dependencies [${describe(lockRoot)}] ` +
+          `do not match the staged manifest [${describe(pinned)}]. ` +
           'npm ci would fail inside Cloud Build.\nRefresh: npm run stage:lock -w @money-kids/functions',
       );
     }
     await copyFile(lockSrc, resolve(stageDir, 'package-lock.json'));
   }
 
-
-  // Everything passed: swap the staged directory into place atomically enough
-  // that deploy/ never holds a half-built artifact.
-  await rm(outDir, { recursive: true, force: true });
+  // Everything passed: swap the staged directory into place. Move the old one
+  // aside first rather than deleting it — predeploy has already pointed
+  // firebase at functions.source, and a crash between an rm and a rename would
+  // leave a mid-flight deploy with no source directory at all.
+  const previous = `${outDir}.old`;
+  await rm(previous, { recursive: true, force: true });
+  await rename(outDir, previous).catch(() => {}); // absent on a first build
   await rename(stageDir, outDir);
+  await rm(previous, { recursive: true, force: true });
   await writeFile(resolve(outDir, '.gitkeep'), '');
 
   console.log(
@@ -342,7 +359,6 @@ const stageDir = resolve(root, '.deploy-staging');
         .map(([d, v]) => `${d}@${v}`)
         .join(', '),
   );
-
 }
 
 main().catch(async (e) => {

@@ -3,6 +3,10 @@
 // from inlined code, and the banner injects createRequire, so importing the
 // bundle is what catches a cold-start crash.
 //
+// It only exercises module scope. A dynamic require inside a callable body is
+// invisible to the metafile, to guards 1-2, and to this check, and would still
+// crash at invocation in production.
+//
 // Takes the staged directory as an argument so this file stays in scripts/
 // and is never uploaded with the function.
 //
@@ -10,6 +14,16 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { EXPECTED_CALLABLES as expected } from './deploy-contract.mjs';
+
+// Stand in for what GCF injects. Set here rather than in the caller so the
+// predeploy hook and CI run this in an identical environment: firebase-tools
+// injects GCLOUD_PROJECT into predeploy hooks but not FIREBASE_CONFIG, and a
+// module-scope config read would otherwise fail confusingly on one path only —
+// or reach for application default credentials, breaking the offline build.
+process.env.GCLOUD_PROJECT ??= 'money-kids-test';
+process.env.FIREBASE_CONFIG ??= JSON.stringify({
+  projectId: process.env.GCLOUD_PROJECT,
+});
 
 const dir = resolve(process.argv[2] ?? 'deploy');
 const mod = await import(pathToFileURL(resolve(dir, 'index.js')).href);

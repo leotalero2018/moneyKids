@@ -32,16 +32,6 @@ jobs:
       - name: Re-resolve the staged tree
         run: npm run stage:lock -w @money-kids/functions
 
-      # Fails the job on high/critical so a serious CVE surfaces on its own
-      # rather than waiting for someone to read the log. Moderate findings are
-      # reported but tolerated: issue #5 already tracks the current ones, which
-      # need a firebase-admin major bump to clear.
-      - name: Audit the deployed tree
-        working-directory: functions/deploy
-        run: |
-          npm audit --omit=dev || true
-          npm audit --omit=dev --audit-level=high
-
       - name: Open a PR if the lock moved
         uses: peter-evans/create-pull-request@v6
         with:
@@ -64,3 +54,13 @@ jobs:
           # stage:lock also rewrites functions/deploy/, which .gitignore
           # excludes; add-paths makes that explicit rather than relying on it
           add-paths: functions/deploy.lock.json
+
+      # Runs AFTER the PR is opened: a high or critical finding is exactly when
+      # the refreshed lock matters most, so failing first would discard it.
+      # Moderate findings are reported but tolerated — issue #5 tracks the
+      # current ones, which need a firebase-admin major bump to clear.
+      - name: Audit the deployed tree
+        working-directory: functions/deploy
+        run: |
+          npm audit --omit=dev || true
+          npm audit --omit=dev --audit-level=high

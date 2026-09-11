@@ -64,13 +64,10 @@ jobs:
         working-directory: functions/deploy
         run: npm ci --omit=dev --workspaces=false
 
-      # Compares against the contract stage.mjs emits, so "right count, wrong
-      # names" cannot pass. The env vars stand in for what GCF injects; without
-      # them any module-scope Firebase config read would fail confusingly.
+      # Compares export names against the shared deploy contract, so "right
+      # count, wrong names" cannot pass. smoke.mjs sets the Firebase env itself
+      # so this and the predeploy hook run identically.
       - name: Smoke test that the bundle loads
-        env:
-          GCLOUD_PROJECT: money-kids-test
-          FIREBASE_CONFIG: '{"projectId":"money-kids-test"}'
         run: npm run smoke -w @money-kids/functions
 
   e2e:

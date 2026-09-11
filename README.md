@@ -43,25 +43,19 @@ to `main` and is the only path that should reach the live project. It passes
 `--project` explicitly from `secrets.FIREBASE_PROJECT_ID`, and `--only` so the
 deploy surface is always named.
 
-`.firebaserc` carries a `prod` alias for convenience when inspecting the live
-project:
-
-```jsonc
-{ "projects": { "default": "money-kids-dev", "prod": "opsix-kids-money" } }
-```
-
-`default` stays on dev, so a bare `firebase deploy` cannot reach production by
-accident. But `firebase deploy -P prod` is now one keystroke away and would push
-**rules, indexes and the money callables** to real family data. Treat a local
-prod deploy as a break-glass action: prefer merging to `main` and letting CI do
-it, and never run `firebase use prod`, which would make the alias sticky for
-every later command in that checkout.
-
-Read-only inspection is fine:
+`.firebaserc` deliberately defines **no production alias**. `default` is the dev
+project, and the live project is named by its bare id when you need it — every
+place that accepts an alias accepts a project id:
 
 ```bash
-firebase firestore:databases:list -P prod
+firebase firestore:databases:list --project opsix-kids-money   # read-only, fine
 ```
+
+An alias would buy nothing but risk: it would put `firebase deploy -P prod` —
+rules, indexes and the nine money callables, against real family data — one flag
+away for anyone with credentials. Don't run `firebase use` with the production
+project either; it makes the target sticky for every later command in that
+checkout.
 
 ### How the functions bundle is built
 
