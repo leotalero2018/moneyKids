@@ -45,6 +45,13 @@ jobs:
       - name: App component tests
         run: npm run test:app
 
+      # The lock/manifest pair is exactly what failed the first deploy, and
+      # npm ci is the only thing that actually validates it.
+      - name: Validate the staged functions manifest installs
+        run: |
+          npm run build -w @money-kids/functions
+          npm ci --prefix functions/deploy --omit=dev
+
       - name: Build app and functions
         run: |
           npm run build:app

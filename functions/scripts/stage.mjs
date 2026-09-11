@@ -20,7 +20,7 @@ import { build } from 'esbuild';
 import { execFile } from 'node:child_process';
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { builtinModules } from 'node:module';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -31,6 +31,11 @@ const repoRoot = resolve(root, '..');
 const outDir = resolve(root, 'deploy');
 const lockSrc = resolve(root, 'deploy.lock.json');
 const refreshLock = process.argv.includes('--refresh-lock');
+// Version drift between the committed lock and the builder's node_modules only
+// matters when we are about to deploy. Under --strict (the predeploy hook) it
+// fails the build; otherwise it warns, so a routine `npm install` cannot break
+// the emulator and test loops.
+const strict = process.argv.includes('--strict');
 
 // Anything NOT listed here must be inlined into the bundle. Adding an entry
 // means Cloud Build has to install it, so it must be published on npm.
@@ -39,10 +44,8 @@ const EXTERNALS = ['firebase-admin', 'firebase-functions'];
 // Only these trees may contribute code to the bundle. Listed package by
 // package so that adding a workspace package does not silently make it
 // shippable into the functions runtime.
-const FIRST_PARTY = [resolve(root, 'src'), resolve(repoRoot, 'packages/shared')];
-
-// The bundle must carry the shared money code, not just resolve the import.
-const REQUIRED_INPUT = resolve(repoRoot, 'packages/shared');
+const SHARED_SRC = resolve(repoRoot, 'packages/shared');
+const FIRST_PARTY = [resolve(root, 'src'), SHARED_SRC];
 
 const fail = (msg) => {
   throw new Error(msg);
@@ -54,7 +57,7 @@ const pkg = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 // so this holds on Windows, where resolve() yields backslashes.
 const isInside = (dir, abs) => {
   const rel = relative(dir, abs);
-  return rel !== '' && !rel.startsWith('..') && !resolve(dir, rel).startsWith('..') && !rel.startsWith(sep) && rel !== '..';
+  return rel !== '' && !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`);
 };
 
 // Reads the installed manifest off disk rather than require()-ing it: packages
@@ -94,7 +97,9 @@ const result = await build({
   banner: {
     // The Node 20 GCF runtime does not enable source maps by default, so the
     // emitted .map would be dead weight without this — a stack trace from a
-    // money callable would point at generated code.
+    // money callable would point at generated code. This costs a little cold
+    // start on every instance; accepted deliberately, because an unreadable
+    // stack trace from a ledger write costs more.
     js:
       "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" +
       '\nprocess.setSourceMapsEnabled(true);',
@@ -121,8 +126,10 @@ if (foreign.length > 0) {
   fail(
     `bundle inlines code from outside first-party source: ${foreign.slice(0, 5).join(', ')}` +
       `${foreign.length > 5 ? ` (+${foreign.length - 5} more)` : ''}\n` +
-      `Every bundled input must live in ${allowed}, and never under node_modules. ` +
-      'Check that @money-kids/shared still resolves to the local workspace package.',
+      `Every bundled input must live in ${allowed}, and never under node_modules.\n` +
+      'If packages/shared gained a runtime dependency, add it to EXTERNALS and to ' +
+      'functions/package.json so Cloud Build installs it. Otherwise @money-kids/shared ' +
+      'has stopped resolving to the local workspace package.',
   );
 }
 
@@ -148,11 +155,22 @@ if (escaped.length > 0) {
   );
 }
 
-// 3. The shared money code must actually be in the bundle, asserted from the
-// metafile rather than by grepping for an identifier: a rename in shared would
-// otherwise fail the build with a misleading "resolved to a stub".
-if (!inputs.some((abs) => isInside(REQUIRED_INPUT, abs))) {
-  fail('bundle contains no code from packages/shared — @money-kids/shared resolved to a stub or empty module');
+// 3. The shared money code must actually end up in the output. esbuild lists
+// an input it merely parsed, so checking that the file appears would pass even
+// if every export were tree-shaken away; bytesInOutput is what actually
+// shipped. Asserted from the metafile rather than by grepping for an
+// identifier, which would not survive renaming and would fail misleadingly on
+// an unrelated rename in shared.
+const sharedBytes = Object.entries(result.metafile.outputs)
+  .filter(([file]) => file.endsWith('.js'))
+  .flatMap(([, o]) => Object.entries(o.inputs ?? {}))
+  .filter(([file]) => isInside(SHARED_SRC, resolve(root, file)))
+  .reduce((total, [, info]) => total + (info.bytesInOutput ?? 0), 0);
+if (sharedBytes === 0) {
+  fail(
+    'no code from packages/shared survived into the bundle — @money-kids/shared ' +
+      'resolved to a stub, or every money helper was tree-shaken away',
+  );
 }
 
 // 4. Every callable declared in src/index.ts must survive into the bundle's
@@ -187,8 +205,43 @@ if (inlined.length > 0) {
   );
 }
 
+if (!pkg.engines?.node) fail('functions/package.json has no engines.node — GCF would silently pick a default runtime');
+
+// The committed lock is the source of truth for what gets deployed: it is
+// fixed by the commit, whereas the builder's node_modules is whatever that
+// machine last installed. Pinning the manifest from the lock is what makes
+// "reproducible from the commit" actually true.
+let lock = null;
+if (!refreshLock) {
+  try {
+    lock = JSON.parse(await readFile(lockSrc, 'utf8'));
+  } catch {
+    fail(`missing ${relative(repoRoot, lockSrc)} — run: npm run stage:lock -w @money-kids/functions`);
+  }
+}
+
 const pinned = Object.fromEntries(
-  await Promise.all(EXTERNALS.map(async (dep) => [dep, await installedVersion(dep)])),
+  await Promise.all(
+    EXTERNALS.map(async (dep) => {
+      const installed = await installedVersion(dep);
+      if (refreshLock) return [dep, installed];
+      const locked = lock.packages?.[`node_modules/${dep}`]?.version;
+      if (!locked) {
+        fail(
+          `${relative(repoRoot, lockSrc)} has no entry for ${dep} — ` +
+            'run: npm run stage:lock -w @money-kids/functions',
+        );
+      }
+      if (locked !== installed) {
+        const msg =
+          `${dep}: lock has ${locked}, node_modules has ${installed}. The deploy uses ${locked}.\n` +
+          'Refresh with: npm run stage:lock -w @money-kids/functions';
+        if (strict) fail(`refusing to deploy with a stale lock — ${msg}`);
+        console.warn(`warning: ${msg}`);
+      }
+      return [dep, locked];
+    }),
+  ),
 );
 
 const manifest = {
@@ -203,8 +256,7 @@ await writeFile(resolve(outDir, 'package.json'), `${JSON.stringify(manifest, nul
 
 // Pinning the two externals only fixes the top level; without a lockfile the
 // transitive tree floats, so two deploys of the same commit could ship
-// different code underneath firebase-admin. The lockfile is committed so the
-// tree is fixed by the commit rather than by whenever the script last ran.
+// different code underneath firebase-admin.
 if (refreshLock) {
   await execFileAsync('npm', ['install', '--package-lock-only', '--omit=dev', '--workspaces=false'], {
     cwd: outDir,
@@ -213,22 +265,6 @@ if (refreshLock) {
   await copyFile(resolve(outDir, 'package-lock.json'), lockSrc);
   console.log(`refreshed ${relative(repoRoot, lockSrc)} — commit it`);
 } else {
-  let lock;
-  try {
-    lock = JSON.parse(await readFile(lockSrc, 'utf8'));
-  } catch {
-    fail(`missing ${relative(repoRoot, lockSrc)} — run: npm run stage:lock -w @money-kids/functions`);
-  }
-  // A lockfile that disagrees with the pinned manifest would make Cloud Build
-  // fail `npm ci` at deploy time; catch it here instead.
-  const drifted = EXTERNALS.filter((dep) => lock.packages?.[`node_modules/${dep}`]?.version !== pinned[dep]);
-  if (drifted.length > 0) {
-    fail(
-      `${relative(repoRoot, lockSrc)} is stale for: ${drifted
-        .map((d) => `${d} (lock ${lock.packages?.[`node_modules/${d}`]?.version ?? 'absent'} vs installed ${pinned[d]})`)
-        .join(', ')}\nRefresh it: npm run stage:lock -w @money-kids/functions`,
-    );
-  }
   await copyFile(lockSrc, resolve(outDir, 'package-lock.json'));
 }
 

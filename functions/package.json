@@ -7,6 +7,7 @@
   },
   "scripts": {
     "build": "node scripts/stage.mjs",
+    "build:deploy": "node scripts/stage.mjs --strict",
     "stage:lock": "node scripts/stage.mjs --refresh-lock",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
