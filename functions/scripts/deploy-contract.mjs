@@ -26,11 +26,27 @@ export const EXPECTED_CALLABLES = [
 // declared in functions/package.json.
 export const EXTERNALS = ['firebase-admin', 'firebase-functions'];
 
-// Modules from packages/shared that must each contribute bytes to the bundle.
-// Checking shared in aggregate would pass while money.ts specifically — the
-// minor-unit arithmetic every balance depends on — had been tree-shaken away
-// or reduced to a stub.
-export const REQUIRED_SHARED_MODULES = ['src/money.ts', 'src/validate.ts'];
+// Every module from packages/shared that the bundle pulls in must contribute
+// bytes to the output. Checking shared in aggregate would pass while money.ts
+// specifically — the minor-unit arithmetic every balance depends on — had been
+// tree-shaken away or reduced to a stub.
+//
+// Inverted deliberately: a new packages/shared/src/deductions.ts carrying
+// money arithmetic is guarded the day it is written, rather than the day
+// someone remembers to add it to a list. Barrels and type-only modules
+// legitimately contribute nothing, so they opt out here.
+export const SHARED_MODULES_EXEMPT_FROM_BYTES = [
+  'src/index.ts', // re-export barrel: contributes no code of its own
+  // The invoice state machine is consumed by the app and the rules tests; no
+  // callable imports it, so it is parsed through the barrel and then dropped.
+  // If a callable ever starts enforcing transitions, remove this line so the
+  // guard covers it.
+  'src/invoiceStatus.ts',
+];
+
+// Always checked even if nothing imports them, so deleting the last caller of
+// the money helpers cannot quietly drop them from the bundle.
+export const REQUIRED_SHARED_MODULES = ['src/money.ts'];
 
 // Inlined rather than installed: bundled at build time, so it must never
 // appear in the generated manifest. Also the alias target, so one edit here

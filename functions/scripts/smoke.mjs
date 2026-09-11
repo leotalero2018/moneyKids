@@ -15,15 +15,25 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { EXPECTED_CALLABLES as expected } from './deploy-contract.mjs';
 
-// Stand in for what GCF injects. Set here rather than in the caller so the
-// predeploy hook and CI run this in an identical environment: firebase-tools
-// injects GCLOUD_PROJECT into predeploy hooks but not FIREBASE_CONFIG, and a
-// module-scope config read would otherwise fail confusingly on one path only —
-// or reach for application default credentials, breaking the offline build.
-process.env.GCLOUD_PROJECT ??= 'money-kids-test';
-process.env.FIREBASE_CONFIG ??= JSON.stringify({
-  projectId: process.env.GCLOUD_PROJECT,
-});
+// Stand in for what GCF injects, so the predeploy hook and CI run this in an
+// identical environment: firebase-tools injects GCLOUD_PROJECT into predeploy
+// hooks but not FIREBASE_CONFIG.
+//
+// Assigned unconditionally, never defaulted. On a production deploy
+// firebase-tools puts the LIVE project in GCLOUD_PROJECT, and this imports the
+// bundle — running module-scope initializeApp() — moments before deploying it,
+// with application default credentials available. Module scope should only be
+// initializing, but nothing enforces that, and this is the one file where
+// "money mutations happen only inside callables" has to hold. So: a dummy
+// project, emulator hosts on a dead port, and no credentials. Fail closed.
+process.env.GCLOUD_PROJECT = 'money-kids-smoke';
+process.env.GOOGLE_CLOUD_PROJECT = 'money-kids-smoke';
+process.env.FIREBASE_CONFIG = JSON.stringify({ projectId: 'money-kids-smoke' });
+process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:1';
+process.env.FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:1';
+process.env.STORAGE_EMULATOR_HOST = 'http://127.0.0.1:1';
+delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+delete process.env.GOOGLE_CREDENTIALS;
 
 const dir = resolve(process.argv[2] ?? 'deploy');
 const mod = await import(pathToFileURL(resolve(dir, 'index.js')).href);

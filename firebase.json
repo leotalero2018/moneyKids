@@ -29,6 +29,10 @@
       "npm run build:deploy -w @money-kids/functions"
     ],
     "ignore": [
+      "node_modules",
+      ".git",
+      "firebase-debug.log",
+      "firebase-debug.*.log",
       ".gitkeep"
     ]
   },

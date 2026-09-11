@@ -94,24 +94,28 @@ describe('staging guards', () => {
     expect(message).toContain('not in the deploy contract: recordPayout');
   });
 
-  it('refuses when the money helpers are tree-shaken away', async () => {
+  it('refuses when a shared module reaches the bundle but is tree-shaken to nothing', async () => {
     const dir = await makeFixture();
+    // A new shared module that nothing calls. It reaches metafile.inputs via
+    // the barrel but contributes zero bytes — an aggregate check would pass,
+    // since money.ts and validate.ts still contribute. This is the case the
+    // inverted guard catches without anyone remembering to list the file.
+    await writeFile(resolve(dir, 'packages/shared/src/deductions.ts'), 'export const unusedHelper = () => 1;\n');
+    await edit(resolve(dir, 'packages/shared/src/index.ts'), (s) => `export * from './deductions';\n${s}`);
+    const { code, message } = await stage(dir);
+    expect(code).toBe(1);
+    expect(message).toContain('packages/shared/src/deductions.ts');
+  });
+
+  it('refuses when money.ts is gone even if nothing imports it any more', async () => {
+    const dir = await makeFixture();
+    // money.ts is in REQUIRED_SHARED_MODULES, so it is checked whether or not
+    // anything currently pulls it in: deleting the last caller must not
+    // quietly drop the minor-unit arithmetic from the bundle.
     await edit(indexIn(dir), () => 'export const ping = 1;\n');
     const { code, message } = await stage(dir);
     expect(code).toBe(1);
     expect(message).toContain('packages/shared/src/money.ts');
-  });
-
-  it('checks each required shared module individually, not in aggregate', async () => {
-    const dir = await makeFixture();
-    // A module that exists in shared but contributes nothing to the bundle.
-    // An aggregate byte check would pass here, since money.ts and validate.ts
-    // still contribute — which is exactly the gap this guard closes.
-    await writeFile(resolve(dir, 'packages/shared/src/unused.ts'), 'export const unused = 1;\n');
-    await edit(contractIn(dir), (s) => s.replace("'src/validate.ts']", "'src/validate.ts', 'src/unused.ts']"));
-    const { code, message } = await stage(dir);
-    expect(code).toBe(1);
-    expect(message).toContain('packages/shared/src/unused.ts');
   });
 
   it('refuses when an external is not declared for Cloud Build', async () => {
@@ -142,6 +146,22 @@ describe('staging guards', () => {
     const { code, message } = await stage(dir);
     expect(code).toBe(1);
     expect(message).toContain('outside first-party source');
+  });
+
+  it('refuses when an import escapes the bundle unresolved', async () => {
+    const dir = await makeFixture();
+    // Guard 2 is unreachable in the current configuration — esbuild externalises
+    // exactly EXTERNALS plus node builtins, so nothing else can escape. It is a
+    // tripwire for a future `packages: 'external'` or `external` change, so this
+    // simulates that by externalising something Cloud Build could not install.
+    await edit(resolve(dir, 'functions/scripts/stage.mjs'), (s) =>
+      s.replace('external: EXTERNALS,', "external: [...EXTERNALS, 'node-fetch'],"),
+    );
+    await edit(indexIn(dir), (s) => `import 'node-fetch';\n${s}`);
+    const { code, message } = await stage(dir);
+    expect(code).toBe(1);
+    expect(message).toContain('not self-contained');
+    expect(message).toContain('node-fetch');
   });
 
   it('refuses when the committed lock disagrees with the manifest', async () => {

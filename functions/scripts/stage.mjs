@@ -22,6 +22,7 @@ import {
   EXTERNALS,
   INLINED_WORKSPACE_PACKAGE,
   REQUIRED_SHARED_MODULES,
+  SHARED_MODULES_EXEMPT_FROM_BYTES,
 } from './deploy-contract.mjs';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -131,7 +132,10 @@ async function main() {
     // and vitest read exactly what gets bundled here. If shared ever gains a
     // dist/ build, this alias must follow it or CI would be testing different
     // money helpers than the ones deployed.
-    alias: { [INLINED_WORKSPACE_PACKAGE]: resolve(SHARED_SRC, 'src/index.ts') },
+    // Aliased to the package directory, not to src/index.ts: esbuild applies
+    // aliases to subpaths too, so pointing at a file would rewrite
+    // `@money-kids/shared/money` to `.../src/index.ts/money` and fail.
+    alias: { [INLINED_WORKSPACE_PACKAGE]: SHARED_SRC },
     sourcemap: true,
     metafile: true,
     banner: {
@@ -214,12 +218,27 @@ async function main() {
       acc.set(resolve(root, file), info.bytesInOutput ?? 0);
       return acc;
     }, new Map());
-  const missingShared = REQUIRED_SHARED_MODULES.filter((mod) => !(contributed.get(resolve(SHARED_SRC, mod)) > 0));
-  if (missingShared.length > 0) {
+  const exempt = new Set(SHARED_MODULES_EXEMPT_FROM_BYTES.map((m) => resolve(SHARED_SRC, m)));
+  // Everything shared that esbuild parsed, plus the modules that must be there
+  // whether or not anything currently imports them.
+  // Candidates come from metafile.inputs (everything esbuild parsed), not from
+  // the output's input map: a module tree-shaken to nothing is absent from the
+  // latter entirely rather than present with zero bytes, so it would slip past.
+  const sharedInputs = new Set([
+    ...inputs.filter((abs) => isInside(SHARED_SRC, abs)),
+    ...REQUIRED_SHARED_MODULES.map((m) => resolve(SHARED_SRC, m)),
+  ]);
+  const emptyShared = [...sharedInputs]
+    .filter((abs) => !exempt.has(abs))
+    .filter((abs) => !(contributed.get(abs) > 0))
+    .map((abs) => relative(repoRoot, abs))
+    .sort();
+  if (emptyShared.length > 0) {
     fail(
-      `no code survived into the bundle from: ${missingShared.map((m) => `packages/shared/${m}`).join(', ')}\n` +
+      `no code survived into the bundle from: ${emptyShared.join(', ')}\n` +
         '@money-kids/shared resolved to a stub, or those helpers were tree-shaken away. ' +
-        'Checking shared in aggregate would miss exactly this.',
+        'Checking shared in aggregate would miss exactly this. If a module legitimately ' +
+        'contributes nothing, add it to SHARED_MODULES_EXEMPT_FROM_BYTES.',
     );
   }
 
