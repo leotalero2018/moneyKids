@@ -248,7 +248,7 @@ async function main() {
       `no code survived into the bundle from: ${emptyShared.join(', ')}\n` +
         '@money-kids/shared resolved to a stub, or those helpers were tree-shaken away. ' +
         'Checking shared in aggregate would miss exactly this. If a module legitimately ' +
-        'contributes nothing, add it to SHARED_MODULES_EXEMPT_FROM_BYTES.',
+        'contributes nothing, add it to SHARED_BARRELS_AND_TYPES in scripts/deploy-contract.mjs.',
     );
   }
 

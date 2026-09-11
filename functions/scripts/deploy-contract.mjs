@@ -26,17 +26,15 @@ export const EXPECTED_CALLABLES = [
 // declared in functions/package.json.
 export const EXTERNALS = ['firebase-admin', 'firebase-functions'];
 
-// Every module from packages/shared that the bundle pulls in must contribute
-// bytes to the output. Checking shared in aggregate would pass while money.ts
-// specifically — the minor-unit arithmetic every balance depends on — had been
-// tree-shaken away or reduced to a stub.
+// Which packages/shared modules may contribute zero bytes to the bundle.
 //
-// Inverted deliberately: a new packages/shared/src/deductions.ts carrying
-// money arithmetic is guarded the day it is written, rather than the day
-// someone remembers to add it to a list. Barrels and type-only modules
-// legitimately contribute nothing, so they opt out here.
-// Modules that legitimately contribute nothing and are expected to: barrels
-// and type-only files. Exempted silently.
+// The guard is inverted on purpose: every shared module esbuild parses must
+// contribute bytes unless it is listed below, so a new
+// packages/shared/src/deductions.ts carrying money arithmetic is protected the
+// day it is written rather than the day someone remembers to list it.
+
+// Legitimately empty and expected to be: barrels and type-only files.
+// Exempted silently.
 export const SHARED_BARRELS_AND_TYPES = ['src/index.ts'];
 
 // Modules that are absent from the bundle because the callables re-implement
