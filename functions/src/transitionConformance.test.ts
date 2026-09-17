@@ -26,14 +26,17 @@ const db = getFirestore();
 
 const { approveInTransaction } = await import('./approval.js');
 
+// A family id of its own: vitest runs these files serially
+// (fileParallelism: false), but sharing 'fam1' with the other suites would
+// make that config load-bearing for correctness rather than just for speed.
 async function seedInvoice(status: InvoiceStatus): Promise<void> {
-  await db.recursiveDelete(db.collection('families').doc('fam1'));
-  await db.doc('families/fam1').set({ name: 'T', language: 'es', currency: 'COP', deductionRules: [] });
-  await db.doc('families/fam1/members/p1').set({ role: 'parent', displayName: 'Leo' });
-  await db.doc('families/fam1/kids/k1').set({
+  await db.recursiveDelete(db.collection('families').doc('famTransitions'));
+  await db.doc('families/famTransitions').set({ name: 'T', language: 'es', currency: 'COP', deductionRules: [] });
+  await db.doc('families/famTransitions/members/p1').set({ role: 'parent', displayName: 'Leo' });
+  await db.doc('families/famTransitions/kids/k1').set({
     name: 'Mia', birthYear: 2016, deductionsEnabled: false, spendableBalance: 0, savingsBalance: 0,
   });
-  await db.doc('families/fam1/invoices/inv1').set({
+  await db.doc('families/famTransitions/invoices/inv1').set({
     kidId: 'k1', activityId: null, description: 'test', photoPaths: [],
     status, requestedAmount: 5000, eventCount: 0, createdAt: FieldValue.serverTimestamp(),
   });
@@ -50,7 +53,7 @@ async function seedInvoice(status: InvoiceStatus): Promise<void> {
 async function attemptApproval(from: InvoiceStatus): Promise<boolean> {
   await seedInvoice(from);
   try {
-    await approveInTransaction(db, 'fam1', 'inv1', {
+    await approveInTransaction(db, 'famTransitions', 'inv1', {
       gross: 5000,
       actorUid: 'p1',
       // Pass the observed status as the expected one so this isolates the
@@ -87,16 +90,16 @@ describe('callables conform to the shared invoice state machine', () => {
     // parent's counter-offer.
     await seedInvoice('countered');
     await expect(
-      approveInTransaction(db, 'fam1', 'inv1', { gross: 5000, actorUid: 'p1', expectedStatus: 'sent' }),
+      approveInTransaction(db, 'famTransitions', 'inv1', { gross: 5000, actorUid: 'p1', expectedStatus: 'sent' }),
     ).rejects.toThrow(/this action cannot settle an invoice in status countered/);
   });
 
   it('records the observed status on the event, not the caller\'s expectation', async () => {
     await seedInvoice('countered');
-    await approveInTransaction(db, 'fam1', 'inv1', {
+    await approveInTransaction(db, 'famTransitions', 'inv1', {
       gross: 4000, actorUid: 'p1', expectedStatus: 'countered',
     });
-    const event = await db.doc('families/fam1/invoices/inv1/events/e1').get();
+    const event = await db.doc('families/famTransitions/invoices/inv1/events/e1').get();
     expect(event.get('from')).toBe('countered');
     expect(event.get('to')).toBe('approved');
   });

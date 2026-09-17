@@ -30,11 +30,11 @@ beforeEach(async () => {
   await env.clearFirestore();
   await seed(env, async (ctx) => {
     const db = ctx.firestore();
-    await setDoc(doc(db, 'families/fam1'), {
+    await setDoc(doc(db, 'families/famTransitions'), {
       name: 'T', language: 'es', currency: 'COP', createdBy: 'p1', deductionRules: [],
     });
-    await setDoc(doc(db, 'families/fam1/members/p1'), { role: 'parent', displayName: 'Leo' });
-    await setDoc(doc(db, 'families/fam1/kids/k1'), {
+    await setDoc(doc(db, 'families/famTransitions/members/p1'), { role: 'parent', displayName: 'Leo' });
+    await setDoc(doc(db, 'families/famTransitions/kids/k1'), {
       name: 'Mia', birthYear: 2016, deductionsEnabled: false, spendableBalance: 0, savingsBalance: 0,
     });
   });
@@ -42,7 +42,7 @@ beforeEach(async () => {
 
 async function seedInvoice(status: InvoiceStatus): Promise<void> {
   await seed(env, async (ctx) => {
-    await setDoc(doc(ctx.firestore(), 'families/fam1/invoices/inv1'), {
+    await setDoc(doc(ctx.firestore(), 'families/famTransitions/invoices/inv1'), {
       kidId: 'k1', activityId: null, description: 'test', photoPaths: [],
       status, requestedAmount: 5000, eventCount: 0, createdAt: serverTimestamp(),
     });
@@ -63,18 +63,18 @@ function attempt(ctx: RulesTestContext, actor: Actor, from: InvoiceStatus, to: I
   if (to === 'countered') {
     update.counterOffer = { amount: 4000, parentId: 'p1', at: serverTimestamp() };
   }
-  batch.update(doc(db, 'families/fam1/invoices/inv1'), update);
+  batch.update(doc(db, 'families/famTransitions/invoices/inv1'), update);
 
   const event: Record<string, unknown> = {
-    from, to, actorUid: actor === 'kid' ? 'kid_fam1_k1' : 'p1', at: serverTimestamp(), kidId: 'k1',
+    from, to, actorUid: actor === 'kid' ? 'kid_famTransitions_k1' : 'p1', at: serverTimestamp(), kidId: 'k1',
   };
   // requestedAmount belongs to 'sent' events only, and must match the invoice
   if (to === 'sent') event.requestedAmount = 5000;
-  batch.set(doc(db, 'families/fam1/invoices/inv1/events/e1'), event);
+  batch.set(doc(db, 'families/famTransitions/invoices/inv1/events/e1'), event);
   return batch.commit();
 }
 
-const ctxFor = (actor: Actor) => (actor === 'kid' ? kidCtx(env, 'fam1', 'k1') : parentCtx(env, 'p1'));
+const ctxFor = (actor: Actor) => (actor === 'kid' ? kidCtx(env, 'famTransitions', 'k1') : parentCtx(env, 'p1'));
 
 describe('firestore rules conform to the shared invoice state machine', () => {
   it('has transitions to check, so the matrix below is not vacuous', () => {
