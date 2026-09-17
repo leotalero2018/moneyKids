@@ -42,13 +42,44 @@ jobs:
       - name: Cloud Functions tests
         run: npm run test:functions
 
+      # Build-only: these run stage.mjs against a tmpdir fixture and need no
+      # emulator, so they are not gated on one starting.
+      - name: Staging guard tests
+        run: npm run test:staging
+
       - name: App component tests
         run: npm run test:app
 
-      - name: Build app and functions
-        run: |
-          npm run build:app
-          npm run build -w @money-kids/functions
+      - name: Build the app
+        run: npm run build:app
+
+      # build:deploy is the strict variant the predeploy hook uses, so drift
+      # between deploy.lock.json and the installed tree fails CI instead of
+      # warning. This covers the two top-level externals only: the staged
+      # lockfile resolves its transitive tree independently of the root
+      # lockfile, so transitives can still differ between what CI tests and
+      # what prod runs.
+      - name: Stage the functions bundle (strict)
+        run: npm run build:deploy -w @money-kids/functions
+
+      # The lock/manifest pair is exactly what failed the first deploy, and
+      # npm ci is the only thing that really validates it. --workspaces=false
+      # stops npm resolving workspace context from the repo root.
+      # Lifecycle scripts stay ENABLED here, unlike refresh-deploy-lock.yml.
+      # This job mirrors Cloud Build, which runs them (protobufjs declares
+      # one), and holds no elevated token; the refresh job disables them
+      # because it installs a freshly re-resolved tree while holding push
+      # rights. Without scripts this would only prove the pair resolves, not
+      # that the install Cloud Build performs succeeds.
+      - name: Validate the staged manifest installs
+        working-directory: functions/deploy
+        run: npm ci --omit=dev --workspaces=false
+
+      # Compares export names against the shared deploy contract, so "right
+      # count, wrong names" cannot pass. smoke.mjs sets the Firebase env itself
+      # so this and the predeploy hook run identically.
+      - name: Smoke test that the bundle loads
+        run: npm run smoke -w @money-kids/functions
 
   e2e:
     runs-on: ubuntu-latest
