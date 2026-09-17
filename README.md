@@ -87,6 +87,12 @@ the deployed artifact contains first-party source including the money helpers,
 and enabling source maps costs a little cold start on every instance. An
 unreadable stack trace from a ledger write costs more.
 
+**`firebase-admin` is held at 13.** Version 14 pulls a CommonJS `jwks-rsa` that
+requires an ESM-only `jose`, which Node 20 cannot `require()`. Moving the
+runtime to Node 22 unblocks it (#15). Note that holding it in `dependabot.yml`
+also suppresses *security* PRs for that package, so the weekly
+`refresh-deploy-lock` audit is the only automated CVE signal for it.
+
 **Known gap.** The emulator loads the staged bundle but resolves
 `firebase-admin` by hoisting to the root `node_modules`, while production
 installs the pinned staged tree. `npm run build` reports where the two
