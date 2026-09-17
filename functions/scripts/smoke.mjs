@@ -12,9 +12,12 @@
 //
 //   node scripts/smoke.mjs deploy
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { dirname, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { EXPECTED_CALLABLES as expected } from './deploy-contract.mjs';
+import { EXPECTED_CALLABLES as expected, REQUIRED_OPTIONAL_PACKAGES } from './deploy-contract.mjs';
 
 // Stand in for what GCF injects, so the predeploy hook and CI run this in an
 // identical environment: firebase-tools injects GCLOUD_PROJECT into predeploy
@@ -48,6 +51,114 @@ delete process.env.GOOGLE_CREDENTIALS;
 process.env.CLOUDSDK_CONFIG = resolve(tmpdir(), 'money-kids-smoke-gcloud');
 
 const dir = resolve(process.argv[2] ?? 'deploy');
+// --strict is for CI, which installs the pinned tree first and runs on the
+// runtime's Node major. The predeploy hook cannot use it: it has just rebuilt
+// the staged directory, so no node_modules exists there yet, and a developer's
+// machine is not required to be on Node 20.
+const strict = process.argv.includes('--strict');
+// Which tree will the bundle's own imports resolve against?
+//
+// Checked BEFORE importing: the two failure modes these guards exist for are
+// "wrong tree" and "wrong Node major", and importing first would evaluate the
+// bundle against the wrong thing and report a confusing ERR_REQUIRE_ESM stack
+// from the hoisted tree instead of the actual problem.
+//
+// Installing the staged manifest proves it resolves; it never evaluates a
+// require. The jose/node-fetch class of break — a CommonJS package requiring
+// an ESM-only dependency — lives in that gap. Note what importing does and
+// does not prove: it catches an EAGER require of an ESM-only module, not a
+// lazy one on, say, a token-refresh path, which would still fail on the first
+// authenticated write in production.
+const pinned = JSON.parse(await readFile(resolve(dir, 'package.json'), 'utf8')).dependencies;
+const installed = existsSync(resolve(dir, 'node_modules'));
+if (installed) {
+  const requireFromTree = createRequire(resolve(dir, 'index.js'));
+  // Resolve the package's main entry and walk up to its manifest: packages
+  // with an exports map (firebase-admin among them) do not expose
+  // ./package.json, so it cannot be required directly.
+  const manifestFor = async (dep) => {
+    const entry = requireFromTree.resolve(dep);
+    // Same trap as the optional-dependency check below: a dependency missing
+    // from the staged tree resolves to the workspace copy instead of failing.
+    if (!entry.startsWith(`${dir}${sep}`)) {
+      throw new Error(
+        `${dep} resolved to ${entry}, outside the staged tree — the deployed ` + 'artifact would not carry it',
+      );
+    }
+    let at = dirname(entry);
+    for (;;) {
+      const candidate = resolve(at, 'package.json');
+      if (existsSync(candidate)) {
+        const pkg = JSON.parse(await readFile(candidate, 'utf8'));
+        if (pkg.name === dep) return pkg;
+      }
+      const up = dirname(at);
+      if (up === at) throw new Error(`cannot locate the manifest for ${dep} from the bundle`);
+      at = up;
+    }
+  };
+  const drifted = [];
+  for (const dep of Object.keys(pinned)) {
+    const { version } = await manifestFor(dep);
+    if (version !== pinned[dep]) drifted.push(`${dep}: pinned ${pinned[dep]}, loaded ${version}`);
+  }
+  if (drifted.length > 0) {
+    throw new Error(`the bundle loaded a different tree than the manifest pins:\n  ${drifted.join('\n  ')}`);
+  }
+  console.log(`  resolved against the pinned deploy tree on node ${process.version}`);
+} else if (strict) {
+  throw new Error(
+    `--strict requires the pinned tree: run \`npm ci --omit=dev --workspaces=false\` in ${dir} first, ` +
+      'otherwise this exercises the workspace hoisting rather than what production installs',
+  );
+} else {
+  console.log(
+    `  resolved against the workspace tree on node ${process.version} — run npm ci in ${dir} ` +
+      'to exercise what production installs',
+  );
+}
+
+// The runtime the deployed functions actually run on. Checked only under
+// --strict, since a developer deploying from a newer Node is fine — but CI
+// asserting on the wrong major would make every ESM finding here meaningless,
+// which is how the jose break reached a green local run in the first place.
+if (strict) {
+  const engines = JSON.parse(await readFile(resolve(dir, 'package.json'), 'utf8')).engines?.node;
+  const want = String(engines ?? '').match(/\d+/)?.[0];
+  const have = process.version.match(/\d+/)?.[0];
+  if (!want) throw new Error('the staged manifest declares no engines.node to check against');
+  if (want !== have) {
+    throw new Error(`this must run on the deployed runtime: engines.node is ${engines}, this is ${process.version}`);
+  }
+  console.log(`  node major matches the deployed runtime (${engines})`);
+
+  // firebase-admin declares these optional. If an optional install is ever
+  // skipped, npm ci exits 0, the manifest is satisfied and the bundle imports
+  // fine — and then every money mutation fails in production. Their absence is
+  // silent and total, so check they actually resolve.
+  const requireFromBundle = createRequire(resolve(dir, 'index.js'));
+  // Resolution walks UP out of the staged directory into the workspace root,
+  // so "it resolved" is not the same as "it is in the deployed tree" — the
+  // first version of this check passed with the package deleted from
+  // deploy/node_modules because it found the repo's copy instead. Require the
+  // resolved path to live inside the staged directory.
+  const missingOptional = REQUIRED_OPTIONAL_PACKAGES.filter((dep) => {
+    try {
+      return !requireFromBundle.resolve(dep).startsWith(`${dir}${sep}`);
+    } catch {
+      return true;
+    }
+  });
+  if (missingOptional.length > 0) {
+    throw new Error(
+      `the deployed tree is missing: ${missingOptional.join(', ')}\n` +
+        'These are optional dependencies of firebase-admin that every Firestore write needs. ' +
+        'npm ci will not have failed; the functions would.',
+    );
+  }
+  console.log(`  optional deps present: ${REQUIRED_OPTIONAL_PACKAGES.join(', ')}`);
+}
+
 const mod = await import(pathToFileURL(resolve(dir, 'index.js')).href);
 const actual = Object.keys(mod);
 

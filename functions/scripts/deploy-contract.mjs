@@ -66,3 +66,10 @@ export const MONEY_CRITICAL_PACKAGES = [
   '@google-cloud/firestore',
   '@grpc/grpc-js',
 ];
+
+// Packages firebase-admin declares as OPTIONAL, which the bundle nonetheless
+// needs for every money mutation. An optional install that is skipped leaves
+// `npm ci` exiting 0, the manifest satisfied and the bundle importing fine —
+// and then every Firestore write fails in production. Their absence is silent
+// and total, so the load smoke test checks they resolve.
+export const REQUIRED_OPTIONAL_PACKAGES = ['@google-cloud/firestore', '@grpc/grpc-js'];

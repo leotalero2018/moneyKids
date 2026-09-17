@@ -45,6 +45,10 @@ const fail = (msg) => {
 };
 
 async function main() {
+  // Keep the staged tree's Node typings on the deployed runtime's line, not on
+  // whatever the builder happens to run.
+  const TYPES_NODE_RANGE = '^20.19.0';
+
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const repoRoot = resolve(root, '..');
   const outDir = resolve(root, 'deploy');
@@ -340,6 +344,13 @@ async function main() {
     main: 'index.js',
     engines: pkg.engines,
     dependencies: pinned,
+    // @types/node arrives as a PRODUCTION transitive (firebase-functions
+    // declares @types/express in dependencies), with a floating range that
+    // otherwise resolves to whatever the machine running stage:lock happens to
+    // have. That made the pinned artifact machine-dependent and contradicted
+    // the point of pinning it at all. Types are inert at runtime; this is
+    // about the lock being reproducible.
+    overrides: { '@types/node': TYPES_NODE_RANGE },
   };
   await writeFile(resolve(stageDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 

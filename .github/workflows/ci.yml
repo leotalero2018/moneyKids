@@ -79,7 +79,7 @@ jobs:
       # count, wrong names" cannot pass. smoke.mjs sets the Firebase env itself
       # so this and the predeploy hook run identically.
       - name: Smoke test that the bundle loads
-        run: npm run smoke -w @money-kids/functions
+        run: npm run smoke -w @money-kids/functions -- --strict
 
   e2e:
     runs-on: ubuntu-latest
