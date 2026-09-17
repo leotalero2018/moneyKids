@@ -109,6 +109,11 @@ jobs:
           # excludes; add-paths makes that explicit rather than relying on it
           add-paths: functions/deploy.lock.json
 
+      # This is also the only automated CVE signal for firebase-admin while
+      # dependabot holds it at 13 (see .github/dependabot.yml): `ignore`
+      # suppresses security PRs as well as version bumps, so nothing else will
+      # tell us.
+      #
       # Runs AFTER the PR is opened: a high or critical finding is exactly when
       # the refreshed lock matters most, so failing first would discard it.
       # Moderate findings are reported but tolerated — issue #5 tracks the

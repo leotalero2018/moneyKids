@@ -23,6 +23,13 @@ updates:
       # takes out verify and e2e. Without this, dependabot re-raises a
       # permanently red PR every week and people learn to ignore red.
       #
+      # CAVEAT: `ignore` suppresses SECURITY updates for this dependency too,
+      # not just version bumps. So a CVE fixed only in firebase-admin 14+ will
+      # not arrive as a PR while this entry stands. That gap is covered by
+      # refresh-deploy-lock.yml, which audits the deployed tree weekly and
+      # fails on high or critical — but it reports rather than proposes a fix,
+      # so the response is manual.
+      #
       # Remove this once #15 moves the runtime to Node 22 — that is also what
       # clears the remaining CVEs in #5.
       - dependency-name: firebase-admin
