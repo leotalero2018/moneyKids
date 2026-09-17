@@ -16,7 +16,9 @@ import { checked, assertParentCaller, type CallerAuth } from './auth.js';
  * table that no callable can actually perform (or vice versa).
  *
  * Exported so the conformance test can assert that equality rather than
- * restating the pairs.
+ * restating the pairs. Every caller of approveInTransaction must register
+ * here: a new approving callable that does not is invisible to the
+ * conformance matrix, which iterates this map.
  */
 export const SERVER_APPROVAL_ENTRY_POINTS = {
   approveInvoice: 'sent',

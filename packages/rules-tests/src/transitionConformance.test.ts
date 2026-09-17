@@ -54,6 +54,14 @@ async function seedInvoice(status: InvoiceStatus): Promise<void> {
     await setDoc(doc(ctx.firestore(), `families/${FAMILY}/invoices/inv1`), {
       kidId: 'k1', activityId: null, description: 'test', photoPaths: [],
       status, requestedAmount: 5000, eventCount: 0, createdAt: serverTimestamp(),
+      // A countered invoice always carries the parent's offer in production.
+      // Seeding one without it would evaluate any rule that reads
+      // counterOffer against a shape that never occurs for real — the wrong
+      // direction to be sloppy in, in a codebase where dereferencing possibly
+      // missing data in rules has already caused a terminal listener bug.
+      ...(status === 'countered'
+        ? { counterOffer: { amount: 4000, parentId: 'p1', at: serverTimestamp() } }
+        : {}),
     });
   });
 }

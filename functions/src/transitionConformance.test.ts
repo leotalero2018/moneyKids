@@ -90,6 +90,14 @@ async function attempt(entry: keyof typeof ENTRY_POINTS, from: InvoiceStatus): P
 }
 
 describe('callables conform to the shared invoice state machine', () => {
+  it('exercises every entry point the production map declares', () => {
+    // The matrix iterates this file's ENTRY_POINTS while the equality check
+    // below reads the production map. Without this, adding a third approving
+    // callable to production and forgetting it here would leave the equality
+    // check passing while the matrix never exercised it.
+    expect(Object.keys(ENTRY_POINTS).sort()).toEqual(Object.keys(SERVER_APPROVAL_ENTRY_POINTS).sort());
+  });
+
   it('the entry points cover exactly the transitions the table permits the server', () => {
     // This is the assertion that catches drift in BOTH directions. Add
     // `returned -> approved` to the table and no entry point settles it, so
