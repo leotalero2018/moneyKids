@@ -15,9 +15,9 @@ import { tmpdir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { EXPECTED_CALLABLES as expected } from './deploy-contract.mjs';
+import { EXPECTED_CALLABLES as expected, REQUIRED_OPTIONAL_PACKAGES } from './deploy-contract.mjs';
 
 // Stand in for what GCF injects, so the predeploy hook and CI run this in an
 // identical environment: firebase-tools injects GCLOUD_PROJECT into predeploy
@@ -56,44 +56,36 @@ const dir = resolve(process.argv[2] ?? 'deploy');
 // the staged directory, so no node_modules exists there yet, and a developer's
 // machine is not required to be on Node 20.
 const strict = process.argv.includes('--strict');
-const mod = await import(pathToFileURL(resolve(dir, 'index.js')).href);
-const actual = Object.keys(mod);
-
-const missing = expected.filter((n) => !actual.includes(n));
-const extra = actual.filter((n) => !expected.includes(n));
-if (missing.length || extra.length) {
-  throw new Error(
-    'bundle exports do not match the deploy contract' +
-      `${missing.length ? `\n  missing: ${missing.join(', ')}` : ''}` +
-      `${extra.length ? `\n  unexpected: ${extra.join(', ')}` : ''}`,
-  );
-}
-
-// A name is not enough: `export const approveInvoice = 5` would satisfy the
-// build-time export check. firebase-functions marks a real callable with
-// __endpoint, which is what the deploy tooling reads.
-const notCallable = expected.filter((n) => typeof mod[n] !== 'function' || !mod[n].__endpoint);
-if (notCallable.length) {
-  throw new Error(`exported but not a deployable callable: ${notCallable.join(', ')}`);
-}
-
-// Which tree did the bundle's own imports actually resolve against?
+// Which tree will the bundle's own imports resolve against?
+//
+// Checked BEFORE importing: the two failure modes these guards exist for are
+// "wrong tree" and "wrong Node major", and importing first would evaluate the
+// bundle against the wrong thing and report a confusing ERR_REQUIRE_ESM stack
+// from the hoisted tree instead of the actual problem.
 //
 // Installing the staged manifest proves it resolves; it never evaluates a
 // require. The jose/node-fetch class of break — a CommonJS package requiring
-// an ESM-only dependency — lives precisely in that gap, and only shows up when
-// something imports the bundle on the runtime's Node version. So say out loud
-// which tree was exercised rather than leaving it to be inferred from CI step
-// ordering.
+// an ESM-only dependency — lives in that gap. Note what importing does and
+// does not prove: it catches an EAGER require of an ESM-only module, not a
+// lazy one on, say, a token-refresh path, which would still fail on the first
+// authenticated write in production.
 const pinned = JSON.parse(await readFile(resolve(dir, 'package.json'), 'utf8')).dependencies;
 const installed = existsSync(resolve(dir, 'node_modules'));
 if (installed) {
-  const requireFromBundle = createRequire(resolve(dir, 'index.js'));
+  const requireFromTree = createRequire(resolve(dir, 'index.js'));
   // Resolve the package's main entry and walk up to its manifest: packages
   // with an exports map (firebase-admin among them) do not expose
   // ./package.json, so it cannot be required directly.
   const manifestFor = async (dep) => {
-    let at = dirname(requireFromBundle.resolve(dep));
+    const entry = requireFromTree.resolve(dep);
+    // Same trap as the optional-dependency check below: a dependency missing
+    // from the staged tree resolves to the workspace copy instead of failing.
+    if (!entry.startsWith(`${dir}${sep}`)) {
+      throw new Error(
+        `${dep} resolved to ${entry}, outside the staged tree — the deployed ` + 'artifact would not carry it',
+      );
+    }
+    let at = dirname(entry);
     for (;;) {
       const candidate = resolve(at, 'package.json');
       if (existsSync(candidate)) {
@@ -136,11 +128,56 @@ if (strict) {
   const have = process.version.match(/\d+/)?.[0];
   if (!want) throw new Error('the staged manifest declares no engines.node to check against');
   if (want !== have) {
-    throw new Error(
-      `this must run on the deployed runtime: engines.node is ${engines}, this is ${process.version}`,
-    );
+    throw new Error(`this must run on the deployed runtime: engines.node is ${engines}, this is ${process.version}`);
   }
   console.log(`  node major matches the deployed runtime (${engines})`);
+
+  // firebase-admin declares these optional. If an optional install is ever
+  // skipped, npm ci exits 0, the manifest is satisfied and the bundle imports
+  // fine — and then every money mutation fails in production. Their absence is
+  // silent and total, so check they actually resolve.
+  const requireFromBundle = createRequire(resolve(dir, 'index.js'));
+  // Resolution walks UP out of the staged directory into the workspace root,
+  // so "it resolved" is not the same as "it is in the deployed tree" — the
+  // first version of this check passed with the package deleted from
+  // deploy/node_modules because it found the repo's copy instead. Require the
+  // resolved path to live inside the staged directory.
+  const missingOptional = REQUIRED_OPTIONAL_PACKAGES.filter((dep) => {
+    try {
+      return !requireFromBundle.resolve(dep).startsWith(`${dir}${sep}`);
+    } catch {
+      return true;
+    }
+  });
+  if (missingOptional.length > 0) {
+    throw new Error(
+      `the deployed tree is missing: ${missingOptional.join(', ')}\n` +
+        'These are optional dependencies of firebase-admin that every Firestore write needs. ' +
+        'npm ci will not have failed; the functions would.',
+    );
+  }
+  console.log(`  optional deps present: ${REQUIRED_OPTIONAL_PACKAGES.join(', ')}`);
+}
+
+const mod = await import(pathToFileURL(resolve(dir, 'index.js')).href);
+const actual = Object.keys(mod);
+
+const missing = expected.filter((n) => !actual.includes(n));
+const extra = actual.filter((n) => !expected.includes(n));
+if (missing.length || extra.length) {
+  throw new Error(
+    'bundle exports do not match the deploy contract' +
+      `${missing.length ? `\n  missing: ${missing.join(', ')}` : ''}` +
+      `${extra.length ? `\n  unexpected: ${extra.join(', ')}` : ''}`,
+  );
+}
+
+// A name is not enough: `export const approveInvoice = 5` would satisfy the
+// build-time export check. firebase-functions marks a real callable with
+// __endpoint, which is what the deploy tooling reads.
+const notCallable = expected.filter((n) => typeof mod[n] !== 'function' || !mod[n].__endpoint);
+if (notCallable.length) {
+  throw new Error(`exported but not a deployable callable: ${notCallable.join(', ')}`);
 }
 
 console.log(`bundle loaded; ${expected.length} callables match the contract`);
