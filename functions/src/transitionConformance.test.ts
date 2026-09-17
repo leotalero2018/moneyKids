@@ -34,12 +34,12 @@ const { acceptCounterOfferCore } = await import('./counterOffer.js');
 // make that config load-bearing for correctness rather than just for speed.
 async function seedInvoice(status: InvoiceStatus): Promise<void> {
   await db.recursiveDelete(db.collection('families').doc(FAMILY));
-  await db.doc('families/famTransitions').set({ name: 'T', language: 'es', currency: 'COP', deductionRules: [] });
-  await db.doc('families/famTransitions/members/p1').set({ role: 'parent', displayName: 'Leo' });
-  await db.doc('families/famTransitions/kids/k1').set({
+  await db.doc(`families/${FAMILY}`).set({ name: 'T', language: 'es', currency: 'COP', deductionRules: [] });
+  await db.doc(`families/${FAMILY}/members/p1`).set({ role: 'parent', displayName: 'Leo' });
+  await db.doc(`families/${FAMILY}/kids/k1`).set({
     name: 'Mia', birthYear: 2016, deductionsEnabled: false, spendableBalance: 0, savingsBalance: 0,
   });
-  await db.doc('families/famTransitions/invoices/inv1').set({
+  await db.doc(`families/${FAMILY}/invoices/inv1`).set({
     kidId: 'k1', activityId: null, description: 'test', photoPaths: [],
     status, requestedAmount: 5000, eventCount: 0, createdAt: FieldValue.serverTimestamp(),
     // Seeded on every invoice regardless of status so that acceptCounterOffer
@@ -111,11 +111,48 @@ describe('callables conform to the shared invoice state machine', () => {
     }
   }
 
-  it("records the observed status on the event, not the caller's expectation", async () => {
+  it('writes an audit event naming the transition that happened', async () => {
+    // Not framed as "observed status, not the caller's expectation": the
+    // `from !== expectedStatus` precondition makes those provably equal, so no
+    // test can distinguish the two implementations. What is worth pinning is
+    // that the immutable audit doc names the real transition.
     await seedInvoice('countered');
     await ENTRY_POINTS.acceptCounterOffer(kidAuth);
     const event = await db.doc(`families/${FAMILY}/invoices/inv1/events/e1`).get();
     expect(event.get('from')).toBe('countered');
     expect(event.get('to')).toBe('approved');
+  });
+
+  // The matrix above proves each entry point settles the right *statuses*. The
+  // reason the narrowing check exists is an amount: without it approveInvoice
+  // would settle a countered invoice at the figure the kid originally asked
+  // for, ignoring the parent's counter-offer. Seeds are requestedAmount 5000
+  // and counterOffer.amount 4000, so the two are distinguishable.
+  it('acceptCounterOffer credits the counter-offer amount, not the requested one', async () => {
+    await seedInvoice('countered');
+    const { approvedAmount } = await ENTRY_POINTS.acceptCounterOffer(kidAuth);
+    expect(approvedAmount).toBe(4000);
+    const kid = await db.doc(`families/${FAMILY}/kids/k1`).get();
+    expect(kid.get('spendableBalance')).toBe(4000);
+  });
+
+  it('approveInvoice credits the requested amount on a sent invoice', async () => {
+    await seedInvoice('sent');
+    const { approvedAmount } = await ENTRY_POINTS.approveInvoice(parentAuth);
+    expect(approvedAmount).toBe(5000);
+    const kid = await db.doc(`families/${FAMILY}/kids/k1`).get();
+    expect(kid.get('spendableBalance')).toBe(5000);
+  });
+
+  it('refuses rather than overpaying when a countered invoice reaches approveInvoice', async () => {
+    // The scenario the narrowing check is for: the kid asked 5000, the parent
+    // countered at 4000. Settling this through approveInvoice would credit
+    // 5000 and silently discard the counter-offer.
+    await seedInvoice('countered');
+    await expect(ENTRY_POINTS.approveInvoice(parentAuth)).rejects.toThrow(
+      /cannot settle an invoice in status countered/,
+    );
+    const kid = await db.doc(`families/${FAMILY}/kids/k1`).get();
+    expect(kid.get('spendableBalance')).toBe(0);
   });
 });

@@ -130,6 +130,6 @@ export async function approveInvoiceCore(
   return approveInTransaction(db, data.familyId, data.invoiceId, {
     gross: inv.get('requestedAmount'),
     actorUid: auth!.uid,
-    expectedStatus: 'sent',
+    expectedStatus: SERVER_APPROVAL_ENTRY_POINTS.approveInvoice,
   });
 }

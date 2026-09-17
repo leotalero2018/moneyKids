@@ -8,9 +8,10 @@ import type { InvoiceDoc } from './invoiceActions.js';
 const MAX_DESCRIPTION = 1000;
 const MAX_NOTE = 500;
 // Which statuses a kid may send from is the state machine's business, not a
-// third copy of the same list: the callables and the Firestore rules both
-// derive it from @money-kids/shared, and a local array here would let the UI
-// offer an action the rules then reject.
+// third copy of the same list. The callables import the same table; the
+// Firestore rules cannot (they have no way to import TypeScript), so a
+// conformance matrix in packages/rules-tests is what keeps those in step. A
+// local array here would let the UI offer an action the rules then reject.
 const canSend = (status: string): boolean => canTransition(status as InvoiceStatus, 'sent', 'kid');
 
 export type Pillar = 'learn' | 'courage' | 'ideas' | 'help';

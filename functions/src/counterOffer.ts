@@ -1,7 +1,7 @@
 import { HttpsError } from 'firebase-functions/v2/https';
 import type { Firestore } from 'firebase-admin/firestore';
 import { validateId } from '@money-kids/shared';
-import { approveInTransaction } from './approval.js';
+import { SERVER_APPROVAL_ENTRY_POINTS, approveInTransaction } from './approval.js';
 import { checked, assertKidCaller, type CallerAuth } from './auth.js';
 
 export async function acceptCounterOfferCore(
@@ -22,6 +22,6 @@ export async function acceptCounterOfferCore(
   return approveInTransaction(db, data.familyId, data.invoiceId, {
     gross: counterAmount,
     actorUid: auth!.uid,
-    expectedStatus: 'countered',
+    expectedStatus: SERVER_APPROVAL_ENTRY_POINTS.acceptCounterOffer,
   });
 }
