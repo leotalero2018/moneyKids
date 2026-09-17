@@ -18,15 +18,32 @@ export type Actor = (typeof ACTORS)[number];
  * app's own UI. Exported as data so tests can assert all three agree with it
  * rather than each re-stating the rules in prose.
  */
-export const TRANSITIONS: readonly { from: InvoiceStatus; to: InvoiceStatus; actors: readonly Actor[] }[] = [
-  { from: 'draft', to: 'sent', actors: ['kid'] },
-  { from: 'sent', to: 'approved', actors: ['server'] },
-  { from: 'sent', to: 'countered', actors: ['parent'] },
-  { from: 'sent', to: 'returned', actors: ['parent'] },
-  { from: 'returned', to: 'sent', actors: ['kid'] },
-  { from: 'countered', to: 'approved', actors: ['server'] },
-  { from: 'countered', to: 'sent', actors: ['kid'] },
-];
+const TRANSITION_MAP = {
+  'draft->sent': ['kid'],
+  'sent->approved': ['server'],
+  'sent->countered': ['parent'],
+  'sent->returned': ['parent'],
+  'returned->sent': ['kid'],
+  'countered->approved': ['server'],
+  'countered->sent': ['kid'],
+} as const satisfies Partial<Record<`${InvoiceStatus}->${InvoiceStatus}`, readonly Actor[]>>;
+
+/**
+ * The same table as an array, for the conformance suites to iterate.
+ *
+ * Declared as a keyed map above rather than directly as an array so that a
+ * duplicate from->to entry is a TypeScript error at the point it is written.
+ * As a bare array, a second 'sent->approved' naming 'parent' would silently
+ * widen who may approve — canTransition is `.some(...)` — and the rules
+ * conformance matrix would then assert the new permission rather than flag it.
+ * The runtime uniqueness test remains as a backstop, but the compiler catches
+ * it first, without anyone needing to run the suite.
+ */
+export const TRANSITIONS: readonly { from: InvoiceStatus; to: InvoiceStatus; actors: readonly Actor[] }[] =
+  Object.entries(TRANSITION_MAP).map(([pair, actors]) => {
+    const [from, to] = pair.split('->') as [InvoiceStatus, InvoiceStatus];
+    return { from, to, actors };
+  });
 
 export function canTransition(from: InvoiceStatus, to: InvoiceStatus, actor: Actor): boolean {
   return TRANSITIONS.some((t) => t.from === from && t.to === to && t.actors.includes(actor));
