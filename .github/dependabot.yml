@@ -16,3 +16,14 @@ updates:
     groups:
       firebase:
         patterns: ['firebase*', '@firebase/*']
+    ignore:
+      # firebase-admin 14 pulls jwks-rsa 4, which is CommonJS and requires
+      # jose 6, which is ESM-only. require() of an ES module needs Node 22;
+      # the functions runtime is Node 20, so the codebase fails to load and
+      # takes out verify and e2e. Without this, dependabot re-raises a
+      # permanently red PR every week and people learn to ignore red.
+      #
+      # Remove this once #15 moves the runtime to Node 22 — that is also what
+      # clears the remaining CVEs in #5.
+      - dependency-name: firebase-admin
+        versions: ['>=14.0.0']
