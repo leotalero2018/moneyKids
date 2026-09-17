@@ -9,6 +9,20 @@ import {
 } from '@money-kids/shared';
 import { checked, assertParentCaller, type CallerAuth } from './auth.js';
 
+/**
+ * Which status each server entry point settles from. This is the deploy-facing
+ * contract: together these must cover exactly the statuses the shared state
+ * machine permits `-> approved` for the server, or a transition exists in the
+ * table that no callable can actually perform (or vice versa).
+ *
+ * Exported so the conformance test can assert that equality rather than
+ * restating the pairs.
+ */
+export const SERVER_APPROVAL_ENTRY_POINTS = {
+  approveInvoice: 'sent',
+  acceptCounterOffer: 'countered',
+} as const satisfies Record<string, InvoiceStatus>;
+
 export async function approveInTransaction(
   db: Firestore,
   familyId: string,
@@ -26,11 +40,11 @@ export async function approveInTransaction(
     // credits a balance, so the transition rule they enforce has to be the
     // shared one rather than a second copy that can drift from it.
     //
-    // Today this is strictly wider than the narrowing check below — both
-    // server transitions are legal, so nothing reaches here that only this
-    // rejects. What it buys is that REMOVING a transition from the table takes
-    // effect in the callable with no code edit, which is what the conformance
-    // test pins.
+    // Today this is unreachable for real callers: every entry point passes an
+    // expectedStatus that is itself a legal server transition, so the
+    // narrowing check below already rejects everything this would. It is
+    // defence in depth, and the conformance test — not this line — is what
+    // actually ties the entry points to the table.
     if (!canTransition(from, 'approved', 'server')) {
       throw new HttpsError('failed-precondition', `cannot approve from status ${from}`);
     }

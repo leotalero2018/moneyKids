@@ -12,11 +12,20 @@
 // field validation would still pass. The suite proves the rules deny
 // everything the table denies, not always for the reason intended.
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { doc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
-import { INVOICE_STATUSES, TRANSITIONS, canTransition, type Actor, type InvoiceStatus } from '@money-kids/shared';
+import { doc, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import {
+  INVOICE_STATUSES,
+  KID_EDITABLE,
+  TRANSITIONS,
+  canTransition,
+  type Actor,
+  type InvoiceStatus,
+} from '@money-kids/shared';
 import type { RulesTestContext, RulesTestEnvironment } from '@firebase/rules-unit-testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { kidCtx, parentCtx, seed, setupTestEnv } from './helpers.js';
+
+const FAMILY = 'famTransitions';
 
 let env: RulesTestEnvironment;
 beforeAll(async () => {
@@ -30,11 +39,11 @@ beforeEach(async () => {
   await env.clearFirestore();
   await seed(env, async (ctx) => {
     const db = ctx.firestore();
-    await setDoc(doc(db, 'families/famTransitions'), {
+    await setDoc(doc(db, `families/${FAMILY}`), {
       name: 'T', language: 'es', currency: 'COP', createdBy: 'p1', deductionRules: [],
     });
-    await setDoc(doc(db, 'families/famTransitions/members/p1'), { role: 'parent', displayName: 'Leo' });
-    await setDoc(doc(db, 'families/famTransitions/kids/k1'), {
+    await setDoc(doc(db, `families/${FAMILY}/members/p1`), { role: 'parent', displayName: 'Leo' });
+    await setDoc(doc(db, `families/${FAMILY}/kids/k1`), {
       name: 'Mia', birthYear: 2016, deductionsEnabled: false, spendableBalance: 0, savingsBalance: 0,
     });
   });
@@ -42,7 +51,7 @@ beforeEach(async () => {
 
 async function seedInvoice(status: InvoiceStatus): Promise<void> {
   await seed(env, async (ctx) => {
-    await setDoc(doc(ctx.firestore(), 'families/famTransitions/invoices/inv1'), {
+    await setDoc(doc(ctx.firestore(), `families/${FAMILY}/invoices/inv1`), {
       kidId: 'k1', activityId: null, description: 'test', photoPaths: [],
       status, requestedAmount: 5000, eventCount: 0, createdAt: serverTimestamp(),
     });
@@ -63,18 +72,18 @@ function attempt(ctx: RulesTestContext, actor: Actor, from: InvoiceStatus, to: I
   if (to === 'countered') {
     update.counterOffer = { amount: 4000, parentId: 'p1', at: serverTimestamp() };
   }
-  batch.update(doc(db, 'families/famTransitions/invoices/inv1'), update);
+  batch.update(doc(db, `families/${FAMILY}/invoices/inv1`), update);
 
   const event: Record<string, unknown> = {
     from, to, actorUid: actor === 'kid' ? 'kid_famTransitions_k1' : 'p1', at: serverTimestamp(), kidId: 'k1',
   };
   // requestedAmount belongs to 'sent' events only, and must match the invoice
   if (to === 'sent') event.requestedAmount = 5000;
-  batch.set(doc(db, 'families/famTransitions/invoices/inv1/events/e1'), event);
+  batch.set(doc(db, `families/${FAMILY}/invoices/inv1/events/e1`), event);
   return batch.commit();
 }
 
-const ctxFor = (actor: Actor) => (actor === 'kid' ? kidCtx(env, 'famTransitions', 'k1') : parentCtx(env, 'p1'));
+const ctxFor = (actor: Actor) => (actor === 'kid' ? kidCtx(env, FAMILY, 'k1') : parentCtx(env, 'p1'));
 
 describe('firestore rules conform to the shared invoice state machine', () => {
   it('has transitions to check, so the matrix below is not vacuous', () => {
@@ -97,5 +106,30 @@ describe('firestore rules conform to the shared invoice state machine', () => {
         });
       }
     }
+  }
+});
+
+describe('firestore rules conform to KID_EDITABLE', () => {
+  // The transition matrix above covers status *pairs*. The rules carry a
+  // second literal list governing which statuses let a kid edit an invoice's
+  // fields in place (firestore.rules: `inv().status in [...]`), and nothing
+  // tied it to KID_EDITABLE — the last of the copies this work set out to
+  // unify. Driven by the shared value so removing countered->sent, which would
+  // make countered invoices read-only, fails here too.
+  it('has editable and non-editable statuses to check', () => {
+    expect(KID_EDITABLE.length).toBeGreaterThan(0);
+    expect(KID_EDITABLE.length).toBeLessThan(INVOICE_STATUSES.length);
+  });
+
+  for (const status of INVOICE_STATUSES) {
+    const editable = KID_EDITABLE.includes(status);
+    it(`a kid ${editable ? 'may' : 'may not'} edit an invoice in status "${status}"`, async () => {
+      await seedInvoice(status);
+      const db = kidCtx(env, FAMILY, 'k1').firestore();
+      const run = updateDoc(doc(db, `families/${FAMILY}/invoices/inv1`), {
+        description: 'texto corregido',
+      });
+      await (editable ? assertSucceeds(run) : assertFails(run));
+    });
   }
 });
