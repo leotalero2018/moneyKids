@@ -20,6 +20,7 @@
     "firebase-functions": "^7.4.0"
   },
   "devDependencies": {
+    "@types/node": "^20.19.0",
     "esbuild": "^0.21.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"

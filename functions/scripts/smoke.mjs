@@ -12,7 +12,10 @@
 //
 //   node scripts/smoke.mjs deploy
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { EXPECTED_CALLABLES as expected } from './deploy-contract.mjs';
 
@@ -67,6 +70,50 @@ if (missing.length || extra.length) {
 const notCallable = expected.filter((n) => typeof mod[n] !== 'function' || !mod[n].__endpoint);
 if (notCallable.length) {
   throw new Error(`exported but not a deployable callable: ${notCallable.join(', ')}`);
+}
+
+// Which tree did the bundle's own imports actually resolve against?
+//
+// Installing the staged manifest proves it resolves; it never evaluates a
+// require. The jose/node-fetch class of break — a CommonJS package requiring
+// an ESM-only dependency — lives precisely in that gap, and only shows up when
+// something imports the bundle on the runtime's Node version. So say out loud
+// which tree was exercised rather than leaving it to be inferred from CI step
+// ordering.
+const pinned = JSON.parse(await readFile(resolve(dir, 'package.json'), 'utf8')).dependencies;
+const installed = existsSync(resolve(dir, 'node_modules'));
+if (installed) {
+  const requireFromBundle = createRequire(resolve(dir, 'index.js'));
+  // Resolve the package's main entry and walk up to its manifest: packages
+  // with an exports map (firebase-admin among them) do not expose
+  // ./package.json, so it cannot be required directly.
+  const manifestFor = async (dep) => {
+    let at = dirname(requireFromBundle.resolve(dep));
+    for (;;) {
+      const candidate = resolve(at, 'package.json');
+      if (existsSync(candidate)) {
+        const pkg = JSON.parse(await readFile(candidate, 'utf8'));
+        if (pkg.name === dep) return pkg;
+      }
+      const up = dirname(at);
+      if (up === at) throw new Error(`cannot locate the manifest for ${dep} from the bundle`);
+      at = up;
+    }
+  };
+  const drifted = [];
+  for (const dep of Object.keys(pinned)) {
+    const { version } = await manifestFor(dep);
+    if (version !== pinned[dep]) drifted.push(`${dep}: pinned ${pinned[dep]}, loaded ${version}`);
+  }
+  if (drifted.length > 0) {
+    throw new Error(`the bundle loaded a different tree than the manifest pins:\n  ${drifted.join('\n  ')}`);
+  }
+  console.log(`  resolved against the pinned deploy tree on node ${process.version}`);
+} else {
+  console.log(
+    `  resolved against the workspace tree on node ${process.version} — run npm ci in ${dir} ` +
+      'to exercise what production installs',
+  );
 }
 
 console.log(`bundle loaded; ${expected.length} callables match the contract`);
