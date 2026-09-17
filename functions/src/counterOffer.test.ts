@@ -39,7 +39,10 @@ describe('acceptCounterOfferCore', () => {
     await expect(acceptCounterOfferCore(db, siblingAuth, { familyId: 'fam1', invoiceId: 'inv1' })).rejects.toThrow();
     await expect(acceptCounterOfferCore(db, parentAuth, { familyId: 'fam1', invoiceId: 'inv1' })).rejects.toThrow();
     await db.doc('families/fam1/invoices/inv1').update({ status: 'sent' });
-    await expect(acceptCounterOfferCore(db, kidAuth, { familyId: 'fam1', invoiceId: 'inv1' })).rejects.toThrow(/cannot approve/i);
+    // the narrowing check, not the state machine: sent->approved is legal for
+    // the server, but acceptCounterOffer specifically must not settle it
+    await expect(acceptCounterOfferCore(db, kidAuth, { familyId: 'fam1', invoiceId: 'inv1' }))
+      .rejects.toThrow(/cannot settle an invoice in status sent/i);
   });
   it('rejects a kid of another family holding a valid kid token', async () => {
     // claims are well-formed and role is 'kid', but for fam2 — the familyId in

@@ -22,21 +22,27 @@ export async function approveInTransaction(
     if (!inv.exists) throw new HttpsError('not-found', 'invoice not found');
     const data = inv.data()!;
     const from = data.status as InvoiceStatus;
-    // Two independent checks, deliberately.
+    // Callables bypass Firestore rules entirely and are the only path that
+    // credits a balance, so the transition rule they enforce has to be the
+    // shared one rather than a second copy that can drift from it.
     //
-    // The shared state machine decides what is legal at all: callables bypass
-    // Firestore rules entirely and are the only path that credits a balance,
-    // so the rule they enforce has to be the same one the app and the rules
-    // enforce, not a second copy that can drift from it.
+    // Today this is strictly wider than the narrowing check below — both
+    // server transitions are legal, so nothing reaches here that only this
+    // rejects. What it buys is that REMOVING a transition from the table takes
+    // effect in the callable with no code edit, which is what the conformance
+    // test pins.
     if (!canTransition(from, 'approved', 'server')) {
       throw new HttpsError('failed-precondition', `cannot approve from status ${from}`);
     }
-    // And each entry point stays narrow: approveInvoice accepts a sent
-    // invoice, acceptCounterOffer a countered one. Without this, either
-    // callable would accept both, and a kid could take the original amount
-    // after a parent had countered it.
+    // Each entry point also stays narrow: approveInvoice settles a sent
+    // invoice, acceptCounterOffer a countered one. Without this, approveInvoice
+    // would settle a countered invoice at the amount the kid originally asked
+    // for, ignoring the parent's counter-offer.
     if (from !== opts.expectedStatus) {
-      throw new HttpsError('failed-precondition', `cannot approve from status ${from}`);
+      throw new HttpsError(
+        'failed-precondition',
+        `this action cannot settle an invoice in status ${from}`,
+      );
     }
     const kidRef = famRef.collection('kids').doc(data.kidId);
     const [kid, family] = [await tx.get(kidRef), await tx.get(famRef)];

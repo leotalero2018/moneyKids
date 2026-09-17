@@ -8,10 +8,16 @@
 // adding or removing a transition in shared changes what is asserted here.
 import { FieldValue } from 'firebase-admin/firestore';
 import { INVOICE_STATUSES, canTransition, type InvoiceStatus } from '@money-kids/shared';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 process.env.GCLOUD_PROJECT = 'money-kids-test';
-process.env.FIRESTORE_EMULATOR_HOST = process.env.FIRESTORE_EMULATOR_HOST ?? '127.0.0.1:8480';
+// No default host: this suite runs under `npm run test:functions`, which wraps
+// it in firebase emulators:exec and sets this. Hardcoding a fallback would
+// duplicate the port from firebase.json and let a missing emulator hang
+// instead of failing.
+if (!process.env.FIRESTORE_EMULATOR_HOST) {
+  throw new Error('FIRESTORE_EMULATOR_HOST is not set — run this via `npm run test:functions`');
+}
 
 const { initializeApp, getApps } = await import('firebase-admin/app');
 const { getFirestore } = await import('firebase-admin/firestore');
@@ -33,7 +39,14 @@ async function seedInvoice(status: InvoiceStatus): Promise<void> {
   });
 }
 
-/** Attempts the server approval and reports whether it was allowed. */
+/**
+ * Attempts the server approval and reports whether it was allowed.
+ *
+ * A bare `catch { return false }` would make the three refusal cases vacuous:
+ * a seeding typo, a missing kid doc or a crash in computeDeductions would all
+ * satisfy them while proving nothing. So a refusal only counts if it is the
+ * state machine refusing.
+ */
 async function attemptApproval(from: InvoiceStatus): Promise<boolean> {
   await seedInvoice(from);
   try {
@@ -45,7 +58,9 @@ async function attemptApproval(from: InvoiceStatus): Promise<boolean> {
       expectedStatus: from as 'sent' | 'countered',
     });
     return true;
-  } catch {
+  } catch (e) {
+    expect((e as { code?: string }).code).toBe('failed-precondition');
+    expect((e as Error).message).toMatch(/cannot approve from status/);
     return false;
   }
 }
@@ -73,7 +88,7 @@ describe('callables conform to the shared invoice state machine', () => {
     await seedInvoice('countered');
     await expect(
       approveInTransaction(db, 'fam1', 'inv1', { gross: 5000, actorUid: 'p1', expectedStatus: 'sent' }),
-    ).rejects.toThrow(/cannot approve from status countered/);
+    ).rejects.toThrow(/this action cannot settle an invoice in status countered/);
   });
 
   it('records the observed status on the event, not the caller\'s expectation', async () => {

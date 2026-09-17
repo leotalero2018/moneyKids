@@ -5,6 +5,7 @@ import {
 import { parentFb } from '../firebase.js';
 import { auth, db } from '../firebase.js';
 import { clearFirestoreData, seedDoc, signInTestParent } from '../test/emulator.js';
+import { INVOICE_STATUSES, canTransition, type InvoiceStatus } from '@money-kids/shared';
 import { returnInvoice, counterInvoice, type InvoiceDoc } from './invoiceActions.js';
 
 const familyId = 'famI';
@@ -84,5 +85,33 @@ describe('counterInvoice', () => {
     await counterInvoice(parentFb, familyId, await loadInvoice(), 3000, '');
     // already countered: the rules only allow sent -> countered
     await expect(counterInvoice(parentFb, familyId, await loadInvoice(), 2000, '')).rejects.toThrow();
+  });
+});
+
+describe('parent actions follow the shared state machine', () => {
+  // The rules would reject these anyway — these helpers write through the
+  // client. The point is that the UI should not silently attempt an action the
+  // rules will deny, and that the parent path stops being a fourth copy of the
+  // transition rules. Driven by canTransition so removing a transition from
+  // the table changes what is asserted here.
+  const illegal: { status: InvoiceStatus; action: 'return' | 'counter' }[] = [];
+  for (const status of INVOICE_STATUSES) {
+    if (!canTransition(status, 'returned', 'parent')) illegal.push({ status, action: 'return' });
+    if (!canTransition(status, 'countered', 'parent')) illegal.push({ status, action: 'counter' });
+  }
+
+  for (const { status, action } of illegal) {
+    it(`refuses to ${action} an invoice in status "${status}"`, async () => {
+      const invoice = { ...(await loadInvoice()), status };
+      const run =
+        action === 'return'
+          ? returnInvoice(parentFb, familyId, invoice, 'nope')
+          : counterInvoice(parentFb, familyId, invoice, 4000, 'nope');
+      await expect(run).rejects.toThrow(/a parent cannot move an invoice/);
+    });
+  }
+
+  it('has illegal combinations to check, so the loop above is not vacuous', () => {
+    expect(illegal.length).toBeGreaterThan(0);
   });
 });

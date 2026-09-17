@@ -1,13 +1,12 @@
-export type InvoiceStatus = 'draft' | 'sent' | 'approved' | 'countered' | 'returned';
-export type Actor = 'kid' | 'parent' | 'server';
+// The array is the declaration and the union is derived from it, so a new
+// status cannot be added to one and forgotten in the other — the conformance
+// matrices iterate INVOICE_STATUSES, and a partially populated list would
+// silently stop covering it.
+export const INVOICE_STATUSES = ['draft', 'sent', 'approved', 'countered', 'returned'] as const;
+export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
 
-export const INVOICE_STATUSES: readonly InvoiceStatus[] = [
-  'draft',
-  'sent',
-  'approved',
-  'countered',
-  'returned',
-];
+export const ACTORS = ['kid', 'parent', 'server'] as const;
+export type Actor = (typeof ACTORS)[number];
 
 /**
  * The invoice state machine — the single source of truth for who may move an
@@ -29,8 +28,17 @@ export const TRANSITIONS: readonly { from: InvoiceStatus; to: InvoiceStatus; act
   { from: 'countered', to: 'sent', actors: ['kid'] },
 ];
 
-export const KID_EDITABLE: readonly InvoiceStatus[] = ['draft', 'returned', 'countered'];
-
 export function canTransition(from: InvoiceStatus, to: InvoiceStatus, actor: Actor): boolean {
   return TRANSITIONS.some((t) => t.from === from && t.to === to && t.actors.includes(actor));
 }
+
+/**
+ * Statuses a kid may still edit — exactly those they can send from, since
+ * editing is only meaningful on an invoice that has not yet gone to a parent.
+ * Derived rather than restated: a second literal list here would drift from
+ * TRANSITIONS the same way the callables and the rules did.
+ */
+export const KID_EDITABLE: readonly InvoiceStatus[] = INVOICE_STATUSES.filter((from) =>
+  canTransition(from, 'sent', 'kid'),
+);
+

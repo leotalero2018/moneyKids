@@ -5,6 +5,12 @@
 //
 // Adding a transition to shared without updating the rules fails here, and so
 // does a rule that permits a transition the table does not.
+//
+// One honest limit: assertFails cannot distinguish "denied by the status-pair
+// rule" from "denied by some other validation on the same write". A rule that
+// wrongly permitted draft->countered but happened to trip on counterOffer
+// field validation would still pass. The suite proves the rules deny
+// everything the table denies, not always for the reason intended.
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { doc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
 import { INVOICE_STATUSES, TRANSITIONS, canTransition, type Actor, type InvoiceStatus } from '@money-kids/shared';
