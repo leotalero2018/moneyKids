@@ -51,6 +51,11 @@ delete process.env.GOOGLE_CREDENTIALS;
 process.env.CLOUDSDK_CONFIG = resolve(tmpdir(), 'money-kids-smoke-gcloud');
 
 const dir = resolve(process.argv[2] ?? 'deploy');
+// --strict is for CI, which installs the pinned tree first and runs on the
+// runtime's Node major. The predeploy hook cannot use it: it has just rebuilt
+// the staged directory, so no node_modules exists there yet, and a developer's
+// machine is not required to be on Node 20.
+const strict = process.argv.includes('--strict');
 const mod = await import(pathToFileURL(resolve(dir, 'index.js')).href);
 const actual = Object.keys(mod);
 
@@ -109,11 +114,33 @@ if (installed) {
     throw new Error(`the bundle loaded a different tree than the manifest pins:\n  ${drifted.join('\n  ')}`);
   }
   console.log(`  resolved against the pinned deploy tree on node ${process.version}`);
+} else if (strict) {
+  throw new Error(
+    `--strict requires the pinned tree: run \`npm ci --omit=dev --workspaces=false\` in ${dir} first, ` +
+      'otherwise this exercises the workspace hoisting rather than what production installs',
+  );
 } else {
   console.log(
     `  resolved against the workspace tree on node ${process.version} — run npm ci in ${dir} ` +
       'to exercise what production installs',
   );
+}
+
+// The runtime the deployed functions actually run on. Checked only under
+// --strict, since a developer deploying from a newer Node is fine — but CI
+// asserting on the wrong major would make every ESM finding here meaningless,
+// which is how the jose break reached a green local run in the first place.
+if (strict) {
+  const engines = JSON.parse(await readFile(resolve(dir, 'package.json'), 'utf8')).engines?.node;
+  const want = String(engines ?? '').match(/\d+/)?.[0];
+  const have = process.version.match(/\d+/)?.[0];
+  if (!want) throw new Error('the staged manifest declares no engines.node to check against');
+  if (want !== have) {
+    throw new Error(
+      `this must run on the deployed runtime: engines.node is ${engines}, this is ${process.version}`,
+    );
+  }
+  console.log(`  node major matches the deployed runtime (${engines})`);
 }
 
 console.log(`bundle loaded; ${expected.length} callables match the contract`);
