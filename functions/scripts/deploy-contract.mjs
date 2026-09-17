@@ -37,17 +37,14 @@ export const EXTERNALS = ['firebase-admin', 'firebase-functions'];
 // Exempted silently.
 export const SHARED_BARRELS_AND_TYPES = ['src/index.ts'];
 
-// Modules that are absent from the bundle because the callables re-implement
-// what they hold. Each prints a warning on every build: this is a divergence
-// to be closed, not a fact to be filed away, and the next person should not
-// read the exemption as "fine to be absent".
-export const SHARED_KNOWN_DIVERGENT = [
-  {
-    module: 'src/invoiceStatus.ts',
-    why: 'the invoice state machine (canTransition) is used by the app and the rules tests, while the callables enforce transitions with inline status comparisons — the same rule in three places with no shared source of truth',
-    issue: '#7',
-  },
-];
+// Modules absent from the bundle because the callables re-implement what they
+// hold. Each prints a warning on every build: a divergence to be closed, not a
+// fact to be filed away, and the next person should not read the exemption as
+// "fine to be absent".
+//
+// Empty, and worth keeping empty. invoiceStatus.ts was here until the
+// callables started consulting canTransition (#7).
+export const SHARED_KNOWN_DIVERGENT = [];
 
 // Always checked even if nothing imports them, so deleting the last caller of
 // the money helpers cannot quietly drop them from the bundle.

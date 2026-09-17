@@ -1,6 +1,12 @@
 import { HttpsError } from 'firebase-functions/v2/https';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { computeDeductions, validateId, type DeductionRule } from '@money-kids/shared';
+import {
+  canTransition,
+  computeDeductions,
+  validateId,
+  type DeductionRule,
+  type InvoiceStatus,
+} from '@money-kids/shared';
 import { checked, assertParentCaller, type CallerAuth } from './auth.js';
 
 export async function approveInTransaction(
@@ -15,8 +21,22 @@ export async function approveInTransaction(
     const inv = await tx.get(invRef);
     if (!inv.exists) throw new HttpsError('not-found', 'invoice not found');
     const data = inv.data()!;
-    if (data.status !== opts.expectedStatus) {
-      throw new HttpsError('failed-precondition', `cannot approve from status ${data.status}`);
+    const from = data.status as InvoiceStatus;
+    // Two independent checks, deliberately.
+    //
+    // The shared state machine decides what is legal at all: callables bypass
+    // Firestore rules entirely and are the only path that credits a balance,
+    // so the rule they enforce has to be the same one the app and the rules
+    // enforce, not a second copy that can drift from it.
+    if (!canTransition(from, 'approved', 'server')) {
+      throw new HttpsError('failed-precondition', `cannot approve from status ${from}`);
+    }
+    // And each entry point stays narrow: approveInvoice accepts a sent
+    // invoice, acceptCounterOffer a countered one. Without this, either
+    // callable would accept both, and a kid could take the original amount
+    // after a parent had countered it.
+    if (from !== opts.expectedStatus) {
+      throw new HttpsError('failed-precondition', `cannot approve from status ${from}`);
     }
     const kidRef = famRef.collection('kids').doc(data.kidId);
     const [kid, family] = [await tx.get(kidRef), await tx.get(famRef)];
@@ -52,7 +72,7 @@ export async function approveInTransaction(
       eventCount: nextEventCount,
     });
     tx.create(invRef.collection('events').doc(`e${nextEventCount}`), {
-      from: opts.expectedStatus, to: 'approved', actorUid: opts.actorUid,
+      from, to: 'approved', actorUid: opts.actorUid,
       at: FieldValue.serverTimestamp(), kidId: data.kidId,
     });
     if (breakdown.netAmount > 0) {
