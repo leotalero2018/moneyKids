@@ -1,7 +1,29 @@
 import { HttpsError } from 'firebase-functions/v2/https';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { computeDeductions, validateId, type DeductionRule } from '@money-kids/shared';
+import {
+  canTransition,
+  computeDeductions,
+  validateId,
+  type DeductionRule,
+  type InvoiceStatus,
+} from '@money-kids/shared';
 import { checked, assertParentCaller, type CallerAuth } from './auth.js';
+
+/**
+ * Which status each server entry point settles from. This is the deploy-facing
+ * contract: together these must cover exactly the statuses the shared state
+ * machine permits `-> approved` for the server, or a transition exists in the
+ * table that no callable can actually perform (or vice versa).
+ *
+ * Exported so the conformance test can assert that equality rather than
+ * restating the pairs. Every caller of approveInTransaction must register
+ * here: a new approving callable that does not is invisible to the
+ * conformance matrix, which iterates this map.
+ */
+export const SERVER_APPROVAL_ENTRY_POINTS = {
+  approveInvoice: 'sent',
+  acceptCounterOffer: 'countered',
+} as const satisfies Record<string, InvoiceStatus>;
 
 export async function approveInTransaction(
   db: Firestore,
@@ -15,8 +37,28 @@ export async function approveInTransaction(
     const inv = await tx.get(invRef);
     if (!inv.exists) throw new HttpsError('not-found', 'invoice not found');
     const data = inv.data()!;
-    if (data.status !== opts.expectedStatus) {
-      throw new HttpsError('failed-precondition', `cannot approve from status ${data.status}`);
+    const from = data.status as InvoiceStatus;
+    // Callables bypass Firestore rules entirely and are the only path that
+    // credits a balance, so the transition rule they enforce has to be the
+    // shared one rather than a second copy that can drift from it.
+    //
+    // Today this is unreachable for real callers: every entry point passes an
+    // expectedStatus that is itself a legal server transition, so the
+    // narrowing check below already rejects everything this would. It is
+    // defence in depth, and the conformance test — not this line — is what
+    // actually ties the entry points to the table.
+    if (!canTransition(from, 'approved', 'server')) {
+      throw new HttpsError('failed-precondition', `cannot approve from status ${from}`);
+    }
+    // Each entry point also stays narrow: approveInvoice settles a sent
+    // invoice, acceptCounterOffer a countered one. Without this, approveInvoice
+    // would settle a countered invoice at the amount the kid originally asked
+    // for, ignoring the parent's counter-offer.
+    if (from !== opts.expectedStatus) {
+      throw new HttpsError(
+        'failed-precondition',
+        `this action cannot settle an invoice in status ${from}`,
+      );
     }
     const kidRef = famRef.collection('kids').doc(data.kidId);
     const [kid, family] = [await tx.get(kidRef), await tx.get(famRef)];
@@ -52,7 +94,7 @@ export async function approveInTransaction(
       eventCount: nextEventCount,
     });
     tx.create(invRef.collection('events').doc(`e${nextEventCount}`), {
-      from: opts.expectedStatus, to: 'approved', actorUid: opts.actorUid,
+      from, to: 'approved', actorUid: opts.actorUid,
       at: FieldValue.serverTimestamp(), kidId: data.kidId,
     });
     if (breakdown.netAmount > 0) {
@@ -90,6 +132,6 @@ export async function approveInvoiceCore(
   return approveInTransaction(db, data.familyId, data.invoiceId, {
     gross: inv.get('requestedAmount'),
     actorUid: auth!.uid,
-    expectedStatus: 'sent',
+    expectedStatus: SERVER_APPROVAL_ENTRY_POINTS.approveInvoice,
   });
 }

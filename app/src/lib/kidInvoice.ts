@@ -1,14 +1,18 @@
 import {
   collection, deleteDoc, doc, serverTimestamp, setDoc, updateDoc, writeBatch,
 } from 'firebase/firestore';
+import { KID_EDITABLE, canTransition, type InvoiceStatus } from '@money-kids/shared';
 import type { FirebaseBundle } from '../firebase.js';
 import type { InvoiceDoc } from './invoiceActions.js';
 
 const MAX_DESCRIPTION = 1000;
 const MAX_NOTE = 500;
-const SENDABLE = ['draft', 'returned', 'countered'] as const;
-const KID_EDITABLE = ['draft', 'returned', 'countered'] as const;
-type KidEditable = typeof KID_EDITABLE[number];
+// Which statuses a kid may send from is the state machine's business, not a
+// third copy of the same list. The callables import the same table; the
+// Firestore rules cannot (they have no way to import TypeScript), so a
+// conformance matrix in packages/rules-tests is what keeps those in step. A
+// local array here would let the UI offer an action the rules then reject.
+const canSend = (status: string): boolean => canTransition(status as InvoiceStatus, 'sent', 'kid');
 
 export type Pillar = 'learn' | 'courage' | 'ideas' | 'help';
 
@@ -87,7 +91,7 @@ export async function updateDraft(fb: FirebaseBundle, args: {
     category?: Pillar | null;
   };
 }): Promise<void> {
-  if (!KID_EDITABLE.includes(args.status as KidEditable)) {
+  if (!KID_EDITABLE.includes(args.status as InvoiceStatus)) {
     throw new Error(`status ${args.status} is not kid-editable`);
   }
   const patch: Record<string, unknown> = {};
@@ -134,7 +138,7 @@ export async function sendInvoice(fb: FirebaseBundle, args: {
 }): Promise<void> {
   const uid = fb.auth.currentUser?.uid;
   if (!uid) throw new Error('no kid session');
-  if (!SENDABLE.includes(args.invoice.status as typeof SENDABLE[number])) {
+  if (!canSend(args.invoice.status)) {
     throw new Error(`an invoice cannot be sent from ${args.invoice.status}`);
   }
   const note = args.note ?? '';
