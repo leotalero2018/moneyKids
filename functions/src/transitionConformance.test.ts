@@ -8,7 +8,7 @@
 // adding or removing a transition in shared changes what is asserted here.
 import { FieldValue } from 'firebase-admin/firestore';
 import { INVOICE_STATUSES, canTransition, type InvoiceStatus } from '@money-kids/shared';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 process.env.GCLOUD_PROJECT = 'money-kids-test';
 // No default host: this suite runs under `npm run test:functions`, which wraps

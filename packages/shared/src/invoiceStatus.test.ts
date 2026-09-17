@@ -54,13 +54,13 @@ describe('the transition table is well-formed', () => {
     expect(TRANSITIONS.filter((t) => t.from === t.to)).toEqual([]);
   });
 
-  it('keeps KID_EDITABLE equal to what a kid can send from', () => {
-    // KID_EDITABLE is derived, so this pins the *meaning* of the derivation:
-    // if countered->sent were removed, countered invoices would silently
-    // become read-only, and only this would notice.
-    expect([...KID_EDITABLE].sort()).toEqual(
-      INVOICE_STATUSES.filter((s) => canTransition(s, 'sent', 'kid')).sort(),
-    );
-    expect(KID_EDITABLE.length).toBeGreaterThan(0);
+  it('lets a kid edit exactly draft, returned and countered invoices', () => {
+    // Deliberately a literal, not a derivation. KID_EDITABLE *is*
+    // `filter(canTransition(_, 'sent', 'kid'))`, so asserting that equality
+    // would restate the implementation and could never fail. This pins the
+    // product decision instead: changing which invoices a kid may still edit
+    // has to be a deliberate edit here, not a side effect of touching the
+    // transition table.
+    expect([...KID_EDITABLE].sort()).toEqual(['countered', 'draft', 'returned']);
   });
 });
