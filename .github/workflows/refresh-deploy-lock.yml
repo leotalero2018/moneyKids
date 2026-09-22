@@ -109,16 +109,21 @@ jobs:
           # excludes; add-paths makes that explicit rather than relying on it
           add-paths: functions/deploy.lock.json
 
-      # This matters more while dependabot holds firebase-admin at 13 (see
-      # .github/dependabot.yml): `ignore` suppresses security update PRs for
-      # it, so no fix will be proposed automatically. Dependabot alerts still
-      # fire in the Security tab — what is missing is the PR, not the warning.
+      # Reports CVEs in the tree production actually installs, and fails the
+      # job on high or critical. Moderate findings are tolerated — #5 tracks
+      # the current ones, which need a firebase-admin major to clear.
       #
-      # Runs AFTER the PR is opened: a high or critical finding is exactly when
-      # the refreshed lock matters most, so failing first would discard it.
-      # Moderate findings are reported but tolerated — issue #5 tracks the
-      # current ones, which need a firebase-admin major bump to clear.
+      # This carries more weight while dependabot holds firebase-admin at 13
+      # (see .github/dependabot.yml): `ignore` suppresses security update PRs
+      # for it, so no fix is proposed automatically. Dependabot alerts still
+      # fire in the Security tab; what is missing is the PR, not the warning.
+      #
+      # if: always() — ordered after the PR step so a finding cannot discard a
+      # refreshed lock, but NOT conditional on it. The first scheduled run
+      # reported nothing at all because the repo did not permit Actions to open
+      # PRs and the audit was skipped along with it.
       - name: Audit the deployed tree
+        if: always()
         working-directory: functions/deploy
         run: |
           npm audit --omit=dev || true
