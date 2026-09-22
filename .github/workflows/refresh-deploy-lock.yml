@@ -57,6 +57,7 @@ jobs:
       # compromised transitive release (protobufjs already declares one). The
       # point here is validating the lock/manifest pair, which needs no scripts.
       - name: Install the refreshed tree exactly as Cloud Build will
+        id: install
         working-directory: functions/deploy
         run: npm ci --omit=dev --workspaces=false --ignore-scripts
 
@@ -80,7 +81,15 @@ jobs:
           git commit -m "chore: refresh functions deploy lockfile"
           git push origin HEAD:"$BRANCH"
 
+      # continue-on-error: opening the PR needs "Allow GitHub Actions to create
+      # and approve pull requests" in the repo settings. When that is off, this
+      # step fails and — before this — took the whole weekly job red with it,
+      # burying the audit signal under a failure that is a settings problem,
+      # not a finding. A permanently red scheduled job is how people learn to
+      # skim past red. The next step turns it into a visible warning instead.
       - name: Open a PR if the lock moved
+        id: pr
+        continue-on-error: true
         if: inputs.branch == ''
         uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6
         with:
@@ -109,6 +118,15 @@ jobs:
           # excludes; add-paths makes that explicit rather than relying on it
           add-paths: functions/deploy.lock.json
 
+      - name: Warn if the PR could not be opened
+        if: steps.pr.outcome == 'failure'
+        run: |
+          echo "::warning title=Lock refresh PR not opened::The refreshed \
+          functions/deploy.lock.json could not be proposed. Enable Settings > \
+          Actions > General > Workflow permissions > 'Allow GitHub Actions to \
+          create and approve pull requests', or run this workflow manually with \
+          a branch input. The audit below still ran."
+
       # Reports CVEs in the tree production actually installs, and fails the
       # job on high or critical. Moderate findings are tolerated — #5 tracks
       # the current ones, which need a firebase-admin major to clear.
@@ -118,12 +136,15 @@ jobs:
       # for it, so no fix is proposed automatically. Dependabot alerts still
       # fire in the Security tab; what is missing is the PR, not the warning.
       #
-      # if: always() — ordered after the PR step so a finding cannot discard a
-      # refreshed lock, but NOT conditional on it. The first scheduled run
-      # reported nothing at all because the repo did not permit Actions to open
-      # PRs and the audit was skipped along with it.
+      # Ordered after the PR step so a finding cannot discard a refreshed lock,
+      # but not conditional on it — the first scheduled run reported nothing at
+      # all because the PR step failed and the audit was skipped with it.
+      #
+      # Deliberately not always(): if the install failed there is no tree to
+      # audit, and a green audit over a missing node_modules would be worse
+      # than no audit. !cancelled() lets a manual stop still stop it.
       - name: Audit the deployed tree
-        if: always()
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: functions/deploy
         run: |
           npm audit --omit=dev || true
