@@ -36,6 +36,44 @@ npm run test:e2e       # Playwright
 Every emulator-backed script builds the functions bundle first, so the staged
 artifact is never stale.
 
+## Environment variables
+
+Only the app has them; `functions/` reads no configuration and holds no
+secrets. Everything the callables need comes from the Firebase Admin SDK's
+ambient credentials.
+
+**Every `VITE_`-prefixed variable is inlined into the browser bundle.** Anyone
+can read them with devtools. That is fine — the Firebase web config is public
+by design, and access is controlled by the Firestore and Storage rules and by
+the callables, not by keeping these values hidden. Never put an API secret or a
+service-account key in one.
+
+| File | Committed? | Purpose |
+|---|---|---|
+| `app/.env` | yes | Emulator defaults. Used by `npm run dev` and every test run. |
+| `app/.env.production` | yes | Blanks `VITE_USE_EMULATORS` so a deployed bundle never tries to reach `127.0.0.1` from someone's phone. |
+| `app/.env.example` | yes | Template and explanation. Inert — Vite does not load it. |
+| `app/.env.local` | **no** | Yours. Overrides the above; use it to point at a real project. |
+| `app/.env.production.local` | **no** | Written by CI at build time from repo secrets. |
+
+Anything matching `*.local` is gitignored, which is Vite's convention for
+per-developer files.
+
+Normal development needs no setup: `npm run emulators` then `npm run dev` picks
+up the committed `app/.env`. To point at a real project instead:
+
+```bash
+cp app/.env.example app/.env.local
+firebase apps:sdkconfig web --project <project-id>   # fill in the values
+# then set VITE_USE_EMULATORS= (empty) in .env.local
+```
+
+That writes to real family data, so prefer the emulators.
+
+A subtlety worth knowing: Vitest runs in Vite's `test` mode, not `development`,
+so a `.env.development` file would not be loaded by the test suite. That is why
+the shared defaults live in plain `.env`.
+
 ## Deploying
 
 **Production deploys run from CI.** `.github/workflows/deploy.yml` fires on merge
