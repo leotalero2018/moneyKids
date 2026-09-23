@@ -36,6 +36,54 @@ npm run test:e2e       # Playwright
 Every emulator-backed script builds the functions bundle first, so the staged
 artifact is never stale.
 
+## Environment variables
+
+Only the app has them; `functions/` reads no configuration and holds no
+secrets. Everything the callables need comes from the Firebase Admin SDK's
+ambient credentials.
+
+**Every `VITE_`-prefixed variable is inlined into the browser bundle.** Anyone
+can read them with devtools. That is fine — the Firebase web config is public
+by design, and access is controlled by the Firestore and Storage rules and by
+the callables, not by keeping these values hidden. Never put an API secret or a
+service-account key in one.
+
+| File | Committed? | Loaded in | Purpose |
+|---|---|---|---|
+| `app/.env` | yes | every mode | Emulator defaults. Used by `npm run dev` and every test run. |
+| `app/.env.local` | **no** | every mode | Yours. Overrides `.env`. |
+| `app/.env.production` | yes | production builds | Blanks `VITE_USE_EMULATORS` so a deployed bundle never tries to reach `127.0.0.1` from someone's phone. |
+| `app/.env.production.local` | **no** | production builds | Written by CI at build time from repo secrets. |
+| `app/.env.example` | yes | never | Template and explanation. Inert — Vite does not load it. |
+
+**Later files win.** That ordering is easy to get backwards, so it is worth
+stating plainly: `.env.production` **overrides** `.env.local`. With
+`VITE_FB_PROJECT_ID` set in both, a production build takes the value from
+`.env.production`.
+
+The practical consequence: `.env.local` is the right file for pointing
+`npm run dev` and the tests somewhere else, and the *wrong* file for pointing a
+production build somewhere else — any key `.env.production` also sets will
+silently win. Use `.env.production.local` for that, which is what CI does.
+
+Anything matching `*.local` is gitignored, which is Vite's convention for
+per-developer files.
+
+Normal development needs no setup: `npm run emulators` then `npm run dev` picks
+up the committed `app/.env`. To point the dev server at a real project:
+
+```bash
+cp app/.env.example app/.env.local
+firebase apps:sdkconfig web --project <project-id>   # fill in the values
+# then set VITE_USE_EMULATORS= (empty) in .env.local
+```
+
+That reads and writes real family data, so prefer the emulators.
+
+A subtlety worth knowing: Vitest runs in Vite's `test` mode, not `development`,
+so a `.env.development` file would not be loaded by the test suite. That is why
+the shared defaults live in plain `.env`.
+
 ## Deploying
 
 **Production deploys run from CI.** `.github/workflows/deploy.yml` fires on merge
