@@ -24,6 +24,6 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
-    "firebase-tools": "^15.25.1"
+    "firebase-tools": "^15.30.2"
   }
 }
